@@ -1,78 +1,48 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 
-function PlaceholderCard({ title, description, badge }) {
+export function LoginPage() {
   return (
-    <div className="p-8 rounded-2xl bg-slate-900/60 border border-slate-800 max-w-2xl mx-auto text-center mt-12">
-      {badge && (
-        <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 mb-4">
-          {badge}
-        </span>
-      )}
-      <h2 className="text-2xl font-bold text-white mb-2">{title}</h2>
-      <p className="text-slate-400 text-sm mb-6">{description}</p>
-      <div className="text-xs font-mono text-slate-500 bg-slate-950 p-3 rounded-lg border border-slate-800/60 inline-block">
-        Component foundation established • Ready for Phase 4 implementation
+    <div className="min-h-screen flex items-center justify-center bg-slate-950 p-4">
+      <div className="w-full max-w-md p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center shadow-xl">
+        <div className="w-10 h-10 mx-auto rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-white mb-4">
+          AI
+        </div>
+        <h2 className="text-2xl font-bold text-white mb-2">Sign in to AI-Nexus</h2>
+        <p className="text-xs text-slate-400 mb-6">Authentication interface placeholder</p>
+        <Link
+          to="/dashboard"
+          className="w-full block py-2.5 px-4 rounded-xl text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors"
+        >
+          Enter Dashboard
+        </Link>
+        <p className="text-xs text-slate-500 mt-4">
+          Don't have an account? <Link to="/register" className="text-indigo-400 hover:underline">Register</Link>
+        </p>
       </div>
     </div>
   );
 }
 
-export function LoginPage() {
-  return (
-    <PlaceholderCard
-      badge="Authentication"
-      title="Sign In to AI-Nexus"
-      description="Secure authentication interface with JWT access and refresh token rotation."
-    />
-  );
-}
-
 export function RegisterPage() {
   return (
-    <PlaceholderCard
-      badge="Onboarding"
-      title="Create Your AI-Nexus Account"
-      description="User registration with input validation and BCrypt password encryption."
-    />
-  );
-}
-
-export function DashboardPage() {
-  return (
-    <PlaceholderCard
-      badge="Analytics & Workspace"
-      title="Workspace Dashboard"
-      description="Overview of active knowledge bases, processing jobs, and agent sessions."
-    />
-  );
-}
-
-export function DocumentsPage() {
-  return (
-    <PlaceholderCard
-      badge="Knowledge Base"
-      title="Document Ingestion & Management"
-      description="Upload PDFs, markdown, and text documents for vector embedding extraction."
-    />
-  );
-}
-
-export function WorkspacesPage() {
-  return (
-    <PlaceholderCard
-      badge="Collaboration"
-      title="Team Workspaces"
-      description="Isolated workspace environments with fine-grained access control."
-    />
-  );
-}
-
-export function ChatPage() {
-  return (
-    <PlaceholderCard
-      badge="AI Conversation"
-      title="Interactive AI Chat & Agents"
-      description="Real-time conversational streaming with context retrieval and tool calling."
-    />
+    <div className="min-h-screen flex items-center justify-center bg-slate-950 p-4">
+      <div className="w-full max-w-md p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center shadow-xl">
+        <div className="w-10 h-10 mx-auto rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-white mb-4">
+          AI
+        </div>
+        <h2 className="text-2xl font-bold text-white mb-2">Create an Account</h2>
+        <p className="text-xs text-slate-400 mb-6">Registration interface placeholder</p>
+        <Link
+          to="/dashboard"
+          className="w-full block py-2.5 px-4 rounded-xl text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors"
+        >
+          Proceed to Dashboard
+        </Link>
+        <p className="text-xs text-slate-500 mt-4">
+          Already have an account? <Link to="/login" className="text-indigo-400 hover:underline">Sign in</Link>
+        </p>
+      </div>
+    </div>
   );
 }
