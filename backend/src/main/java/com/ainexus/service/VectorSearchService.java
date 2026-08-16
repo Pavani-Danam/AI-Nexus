@@ -4,6 +4,8 @@ import com.ainexus.entity.Document;
 import com.ainexus.entity.DocumentChunk;
 import com.ainexus.repository.DocumentChunkRepository;
 import com.ainexus.repository.DocumentRepository;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -20,6 +22,7 @@ public class VectorSearchService {
     private final EmbeddingService embeddingService;
     private final DocumentChunkRepository documentChunkRepository;
     private final DocumentRepository documentRepository;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public VectorSearchService(EmbeddingService embeddingService,
                                DocumentChunkRepository documentChunkRepository,
@@ -35,8 +38,15 @@ public class VectorSearchService {
             return Collections.emptyList();
         }
 
-        List<Double> queryVector = embeddingService.generateEmbedding(query);
-        if (queryVector.isEmpty()) {
+        List<Float> queryVector;
+        try {
+            queryVector = embeddingService.generateEmbedding(query);
+        } catch (Exception e) {
+            logger.warn("Could not generate query embedding: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+
+        if (queryVector == null || queryVector.isEmpty()) {
             return Collections.emptyList();
         }
 
@@ -49,8 +59,8 @@ public class VectorSearchService {
                 if (chunk.getEmbedding() == null || chunk.getEmbedding().isBlank()) {
                     continue;
                 }
-                List<Double> chunkVector = embeddingService.deserializeEmbedding(chunk.getEmbedding());
-                double score = embeddingService.calculateCosineSimilarity(queryVector, chunkVector);
+                List<Float> chunkVector = deserializeEmbedding(chunk.getEmbedding());
+                double score = calculateCosineSimilarity(queryVector, chunkVector);
 
                 if (score >= minScore) {
                     allResults.add(new SearchResult(
@@ -70,6 +80,42 @@ public class VectorSearchService {
                 .sorted(Comparator.comparingDouble(SearchResult::score).reversed())
                 .limit(topK > 0 ? topK : 5)
                 .collect(Collectors.toList());
+    }
+
+    private List<Float> deserializeEmbedding(String json) {
+        if (json == null || json.trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<Float>>() {});
+        } catch (Exception e) {
+            logger.error("Error deserializing vector: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    private double calculateCosineSimilarity(List<Float> vecA, List<Float> vecB) {
+        if (vecA == null || vecB == null || vecA.isEmpty() || vecB.isEmpty() || vecA.size() != vecB.size()) {
+            return 0.0;
+        }
+
+        double dotProduct = 0.0;
+        double normA = 0.0;
+        double normB = 0.0;
+
+        for (int i = 0; i < vecA.size(); i++) {
+            float a = vecA.get(i);
+            float b = vecB.get(i);
+            dotProduct += a * b;
+            normA += a * a;
+            normB += b * b;
+        }
+
+        if (normA == 0.0 || normB == 0.0) {
+            return 0.0;
+        }
+
+        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
     }
 
     public record SearchResult(
