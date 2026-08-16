@@ -1,5 +1,6 @@
 package com.ainexus.controller;
 
+import com.ainexus.dto.RAGCitation;
 import com.ainexus.dto.RAGChunk;
 import com.ainexus.dto.RAGQueryRequest;
 import com.ainexus.dto.RAGResponse;
@@ -75,11 +76,12 @@ class RAGControllerTest {
     }
 
     @Test
-    @DisplayName("TEST 1: Authenticated valid query returns 200 OK and grounded answer")
-    void testValidQueryReturns200() throws Exception {
+    @DisplayName("TEST 1: Authenticated valid query returns 200 OK, grounded answer and citations")
+    void testValidQueryReturns200WithCitations() throws Exception {
         RAGQueryRequest request = new RAGQueryRequest("What is the architecture?", 10L, 5);
         RAGChunk chunk = new RAGChunk(100L, "doc.pdf", 0, 0.95, "Architecture details", 20);
-        RAGResponse ragResponse = new RAGResponse("This is the architecture.", "What is the architecture?", 10L, List.of(chunk), true);
+        RAGCitation citation = RAGCitation.fromChunk(chunk);
+        RAGResponse ragResponse = new RAGResponse("This is the architecture.", "What is the architecture?", 10L, List.of(citation), List.of(chunk), true);
 
         when(authentication.getName()).thenReturn("testuser");
         when(userService.getUserByUsername("testuser")).thenReturn(Optional.of(testUser));
@@ -95,7 +97,12 @@ class RAGControllerTest {
                 .andExpect(jsonPath("$.answer").value("This is the architecture."))
                 .andExpect(jsonPath("$.query").value("What is the architecture?"))
                 .andExpect(jsonPath("$.workspaceId").value(10))
-                .andExpect(jsonPath("$.hasContext").value(true));
+                .andExpect(jsonPath("$.hasContext").value(true))
+                .andExpect(jsonPath("$.citations[0].documentId").value(100))
+                .andExpect(jsonPath("$.citations[0].filename").value("doc.pdf"))
+                .andExpect(jsonPath("$.citations[0].chunkIndex").value(0))
+                .andExpect(jsonPath("$.citations[0].similarityScore").value(0.95))
+                .andExpect(jsonPath("$.citations[0].sourceId").value("doc-100-chunk-0"));
     }
 
     @Test
@@ -139,7 +146,7 @@ class RAGControllerTest {
     @DisplayName("TEST 4: Omitted workspaceId resolves default user workspace automatically")
     void testDefaultWorkspaceResolution() throws Exception {
         RAGQueryRequest request = new RAGQueryRequest("Tell me about policies", null, 5);
-        RAGResponse ragResponse = new RAGResponse("Company policy info.", "Tell me about policies", 10L, Collections.emptyList(), false);
+        RAGResponse ragResponse = new RAGResponse("Company policy info.", "Tell me about policies", 10L, Collections.emptyList(), Collections.emptyList(), false);
 
         when(authentication.getName()).thenReturn("testuser");
         when(userService.getUserByUsername("testuser")).thenReturn(Optional.of(testUser));
@@ -153,6 +160,8 @@ class RAGControllerTest {
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.answer").value("Company policy info."))
-                .andExpect(jsonPath("$.workspaceId").value(10));
+                .andExpect(jsonPath("$.workspaceId").value(10))
+                .andExpect(jsonPath("$.citations").isArray())
+                .andExpect(jsonPath("$.citations").isEmpty());
     }
 }

@@ -79,8 +79,8 @@ class RAGGenerationServiceImplTest {
     }
 
     @Test
-    @DisplayName("TEST 1: Valid RAG context + query returns grounded answer from Gemini")
-    void testSuccessfulRAGGeneration() {
+    @DisplayName("TEST 1: Valid RAG context + query returns grounded answer with authoritative citations")
+    void testSuccessfulRAGGenerationWithCitations() {
         RAGChunk chunk = new RAGChunk(10L, "architecture.pdf", 0, 0.91, "Microservices guidelines.", 25);
         RAGContext ragContext = new RAGContext("architecture", 1L, List.of(chunk), "Microservices guidelines.", 25);
         RAGPrompt ragPrompt = new RAGPrompt("System rules", "Context text", "architecture", "Full structured prompt", true);
@@ -97,14 +97,41 @@ class RAGGenerationServiceImplTest {
         assertEquals("architecture", response.query());
         assertEquals(1L, response.workspaceId());
         assertTrue(response.hasContext());
-        assertEquals(1, response.sources().size());
-        assertEquals("architecture.pdf", response.sources().get(0).filename());
+        assertEquals(1, response.citations().size());
+        assertEquals(10L, response.citations().get(0).documentId());
+        assertEquals("architecture.pdf", response.citations().get(0).filename());
+        assertEquals(0, response.citations().get(0).chunkIndex());
+        assertEquals(0.91, response.citations().get(0).similarityScore());
+        assertEquals("doc-10-chunk-0", response.citations().get(0).sourceId());
         assertEquals("Full structured prompt", ragGenerationService.getLastPromptReceived());
     }
 
     @Test
-    @DisplayName("TEST 2: Empty context is handled safely without hallucinated document sources")
-    void testEmptyContextGeneration() {
+    @DisplayName("TEST 2: Duplicate retrieved chunks are deduplicated by documentId and chunkIndex")
+    void testDuplicateChunkDeduplication() {
+        RAGChunk c1 = new RAGChunk(10L, "policy.pdf", 0, 0.95, "Leave policy text", 17);
+        RAGChunk c2 = new RAGChunk(10L, "policy.pdf", 0, 0.95, "Leave policy text duplicate", 27);
+        RAGChunk c3 = new RAGChunk(10L, "policy.pdf", 1, 0.88, "Second chunk text", 17);
+
+        RAGContext ragContext = new RAGContext("leave", 1L, List.of(c1, c2, c3), "All text", 61);
+        RAGPrompt ragPrompt = new RAGPrompt("System", "Context", "leave", "Prompt", true);
+
+        when(ragRetrievalService.retrieveAndAssembleContext("leave", 1L, 5, testUser)).thenReturn(ragContext);
+        when(ragPromptBuilder.buildPrompt("leave", ragContext)).thenReturn(ragPrompt);
+
+        ragGenerationService.setMockResponseText("20 days annual leave.");
+
+        RAGResponse response = ragGenerationService.generateAnswer("leave", 1L, 5, testUser);
+
+        assertNotNull(response);
+        assertEquals(2, response.citations().size());
+        assertEquals("doc-10-chunk-0", response.citations().get(0).sourceId());
+        assertEquals("doc-10-chunk-1", response.citations().get(1).sourceId());
+    }
+
+    @Test
+    @DisplayName("TEST 3: Empty context returns empty citations list without fake citations")
+    void testEmptyContextGenerationReturnsEmptyCitations() {
         RAGContext emptyContext = RAGContext.empty("unmatched query", 1L);
         RAGPrompt emptyPrompt = new RAGPrompt("System rules", "[NO RELEVANT DOCUMENT CONTEXT AVAILABLE]", "unmatched query", "Full empty prompt", false);
 
@@ -117,12 +144,13 @@ class RAGGenerationServiceImplTest {
 
         assertNotNull(response);
         assertFalse(response.hasContext());
+        assertEquals(0, response.citations().size());
         assertEquals(0, response.sources().size());
         assertEquals("I could not find relevant information in the available documents.", response.answer());
     }
 
     @Test
-    @DisplayName("TEST 3 & 4: Gemini API failure throws controlled RuntimeException")
+    @DisplayName("TEST 4: Gemini API failure throws controlled RuntimeException")
     void testGeminiApiFailure() {
         RAGContext ragContext = RAGContext.empty("query", 1L);
         RAGPrompt ragPrompt = new RAGPrompt("System", "Context", "query", "Prompt", false);

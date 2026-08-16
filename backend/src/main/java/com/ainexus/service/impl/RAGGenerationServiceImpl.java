@@ -1,10 +1,11 @@
 package com.ainexus.service.impl;
 
+import com.ainexus.dto.RAGCitation;
+import com.ainexus.dto.RAGChunk;
 import com.ainexus.dto.RAGContext;
 import com.ainexus.dto.RAGPrompt;
 import com.ainexus.dto.RAGResponse;
 import com.ainexus.entity.User;
-import com.ainexus.exception.EmbeddingException;
 import com.ainexus.service.RAGGenerationService;
 import com.ainexus.service.RAGPromptBuilder;
 import com.ainexus.service.RAGRetrievalService;
@@ -20,8 +21,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @Service
 public class RAGGenerationServiceImpl implements RAGGenerationService {
@@ -74,16 +74,39 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
         // 3. Call Gemini model
         String answer = callGeminiGenerateContent(ragPrompt.fullPrompt());
 
-        logger.info("Successfully completed RAG generation for workspace id: {} (chunks used: {})",
-                workspaceId, ragContext.chunks().size());
+        // 4. Build authoritative citations from retrieved chunks (deduplicated by documentId + chunkIndex)
+        List<RAGCitation> citations = buildAuthoritativeCitations(ragContext.chunks());
+
+        logger.info("Successfully completed RAG generation for workspace id: {} (chunks used: {}, citations: {})",
+                workspaceId, ragContext.chunks().size(), citations.size());
 
         return new RAGResponse(
                 answer,
                 query.trim(),
                 workspaceId,
+                citations,
                 ragContext.chunks(),
                 ragPrompt.hasContext()
         );
+    }
+
+    private List<RAGCitation> buildAuthoritativeCitations(List<RAGChunk> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        Set<String> seenKeys = new LinkedHashSet<>();
+        List<RAGCitation> result = new ArrayList<>();
+
+        for (RAGChunk chunk : chunks) {
+            if (chunk != null) {
+                String key = chunk.documentId() + ":" + chunk.chunkIndex();
+                if (seenKeys.add(key)) {
+                    result.add(RAGCitation.fromChunk(chunk));
+                }
+            }
+        }
+        return result;
     }
 
     protected String callGeminiGenerateContent(String promptText) {
