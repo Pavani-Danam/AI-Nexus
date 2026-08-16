@@ -55,8 +55,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     SecurityContextHolder.getContext().setAuthentication(authToken);
                 }
             }
-        } catch (Exception ignored) {
-            // Malformed, invalid, or expired token will fail authentication silently
+        } catch (Exception ex) {
+            // Malformed, invalid, or expired tokens clear the security context cleanly
+            SecurityContextHolder.clearContext();
         }
 
         filterChain.doFilter(request, response);
