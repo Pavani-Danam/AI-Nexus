@@ -14,7 +14,7 @@ export function FormInput({
 }) {
   return (
     <div className="space-y-1.5 text-left">
-      <label htmlFor={id} className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+      <label htmlFor={id} className="block text-xs font-semibold text-slate-700 dark:text-slate-200">
         {label} {required && <span className="text-rose-500">*</span>}
       </label>
       <input
@@ -27,13 +27,13 @@ export function FormInput({
         required={required}
         disabled={disabled}
         autoComplete={autoComplete}
-        className={`w-full px-3.5 py-2.5 bg-white dark:bg-slate-850 border rounded-xl text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 transition-all focus:outline-hidden focus:ring-2 disabled:opacity-60 disabled:cursor-not-allowed ${
+        className={`w-full px-3.5 py-2.5 bg-slate-900/90 dark:bg-slate-800 border rounded-xl text-sm text-slate-100 placeholder-slate-500 transition-all focus:outline-hidden focus:ring-2 disabled:opacity-60 disabled:cursor-not-allowed ${
           error
             ? 'border-rose-500 focus:ring-rose-500/30 focus:border-rose-500'
-            : 'border-slate-300 dark:border-slate-700/80 focus:ring-indigo-500/30 focus:border-indigo-500'
+            : 'border-slate-700 focus:ring-indigo-500/40 focus:border-indigo-400'
         }`}
       />
-      {error && <p className="text-xs text-rose-500 font-medium">{error}</p>}
+      {error && <p className="text-xs text-rose-400 font-medium">{error}</p>}
     </div>
   );
 }
@@ -53,7 +53,7 @@ export function PasswordInput({
 
   return (
     <div className="space-y-1.5 text-left">
-      <label htmlFor={id} className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+      <label htmlFor={id} className="block text-xs font-semibold text-slate-700 dark:text-slate-200">
         {label} {required && <span className="text-rose-500">*</span>}
       </label>
       <div className="relative">
@@ -67,17 +67,17 @@ export function PasswordInput({
           required={required}
           disabled={disabled}
           autoComplete={autoComplete}
-          className={`w-full pl-3.5 pr-11 py-2.5 bg-white dark:bg-slate-850 border rounded-xl text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 transition-all focus:outline-hidden focus:ring-2 disabled:opacity-60 disabled:cursor-not-allowed ${
+          className={`w-full pl-3.5 pr-11 py-2.5 bg-slate-900/90 dark:bg-slate-800 border rounded-xl text-sm text-slate-100 placeholder-slate-500 transition-all focus:outline-hidden focus:ring-2 disabled:opacity-60 disabled:cursor-not-allowed ${
             error
               ? 'border-rose-500 focus:ring-rose-500/30 focus:border-rose-500'
-              : 'border-slate-300 dark:border-slate-700/80 focus:ring-indigo-500/30 focus:border-indigo-500'
+              : 'border-slate-700 focus:ring-indigo-500/40 focus:border-indigo-400'
           }`}
         />
         <button
           type="button"
           onClick={() => setShowPassword(!showPassword)}
           tabIndex={-1}
-          className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+          className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-200"
           aria-label={showPassword ? "Hide password" : "Show password"}
         >
           {showPassword ? (
@@ -92,7 +92,7 @@ export function PasswordInput({
           )}
         </button>
       </div>
-      {error && <p className="text-xs text-rose-500 font-medium">{error}</p>}
+      {error && <p className="text-xs text-rose-400 font-medium">{error}</p>}
     </div>
   );
 }
@@ -108,7 +108,7 @@ export function FormButton({
     <button
       type={type}
       disabled={disabled || loading}
-      className={`w-full py-2.5 px-4 rounded-xl text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-md shadow-indigo-600/20 flex items-center justify-center gap-2 ${className}`}
+      className={`w-full py-2.5 px-4 rounded-xl text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-md shadow-indigo-600/30 flex items-center justify-center gap-2 ${className}`}
     >
       {loading && (
         <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
@@ -130,8 +130,8 @@ export function AlertBanner({ type = "error", message, onClose }) {
     <div
       className={`p-3.5 rounded-xl text-xs sm:text-sm flex items-start justify-between gap-2 transition-all ${
         isError
-          ? 'bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400'
-          : 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400'
+          ? 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+          : 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
       }`}
       role="alert"
     >
@@ -143,7 +143,7 @@ export function AlertBanner({ type = "error", message, onClose }) {
         <button
           type="button"
           onClick={onClose}
-          className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+          className="text-slate-400 hover:text-slate-200 text-base leading-none"
           aria-label="Dismiss alert"
         >
           &times;
