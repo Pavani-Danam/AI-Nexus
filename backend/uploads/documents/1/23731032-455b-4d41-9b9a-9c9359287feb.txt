@@ -1,0 +1,7 @@
+AI-Nexus is an enterprise-grade AI collaboration and knowledge management platform. It combines robust vector databases with generative AI capabilities.
+
+Paragraph 1: The document ingestion pipeline handles PDF, DOCX, and TXT files securely. Text extraction is performed using Apache Tika.
+
+Paragraph 2: Text cleaning standardizes whitespace and line breaks while preserving important paragraph boundaries and multilingual Unicode content.
+
+Paragraph 3: The text chunking engine partitions cleaned text into coherent, overlapping windows to maximize retrieval accuracy during RAG queries.

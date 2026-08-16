@@ -1,6 +1,7 @@
 package com.ainexus.controller;
 
 import com.ainexus.dto.DocumentResponse;
+import com.ainexus.dto.TextChunk;
 import com.ainexus.entity.Document;
 import com.ainexus.entity.DocumentStatus;
 import com.ainexus.entity.User;
@@ -76,6 +77,27 @@ public class DocumentController {
                 "documentId", id,
                 "extractedText", text,
                 "characterCount", text.length()
+        ));
+    }
+
+    @GetMapping("/{id}/chunks")
+    public ResponseEntity<Map<String, Object>> getDocumentChunks(
+            @PathVariable Long id,
+            Authentication authentication) {
+
+        if (authentication == null || authentication.getName() == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        User user = userService.getUserByUsername(authentication.getName())
+                .or(() -> userService.getUserByEmail(authentication.getName()))
+                .orElseThrow(() -> new ResourceNotFoundException("Authenticated user not found"));
+
+        List<TextChunk> chunks = documentService.extractAndChunkDocument(id, user);
+        return ResponseEntity.ok(Map.of(
+                "documentId", id,
+                "totalChunks", chunks.size(),
+                "chunks", chunks
         ));
     }
 

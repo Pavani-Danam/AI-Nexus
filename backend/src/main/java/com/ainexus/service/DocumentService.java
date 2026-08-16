@@ -1,5 +1,6 @@
 package com.ainexus.service;
 
+import com.ainexus.dto.TextChunk;
 import com.ainexus.entity.Document;
 import com.ainexus.entity.DocumentStatus;
 import com.ainexus.entity.User;
@@ -31,6 +32,7 @@ public class DocumentService {
     private final FileValidationService fileValidationService;
     private final DocumentTextExtractionService textExtractionService;
     private final DocumentTextCleaningService textCleaningService;
+    private final DocumentTextChunkingService textChunkingService;
     private final WorkspaceRepository workspaceRepository;
     private final WorkspaceMemberRepository workspaceMemberRepository;
     private final UserRepository userRepository;
@@ -40,6 +42,7 @@ public class DocumentService {
                            FileValidationService fileValidationService,
                            DocumentTextExtractionService textExtractionService,
                            DocumentTextCleaningService textCleaningService,
+                           DocumentTextChunkingService textChunkingService,
                            WorkspaceRepository workspaceRepository,
                            WorkspaceMemberRepository workspaceMemberRepository,
                            UserRepository userRepository) {
@@ -48,6 +51,7 @@ public class DocumentService {
         this.fileValidationService = fileValidationService;
         this.textExtractionService = textExtractionService;
         this.textCleaningService = textCleaningService;
+        this.textChunkingService = textChunkingService;
         this.workspaceRepository = workspaceRepository;
         this.workspaceMemberRepository = workspaceMemberRepository;
         this.userRepository = userRepository;
@@ -120,6 +124,12 @@ public class DocumentService {
         Path filePath = fileStorageService.getRootLocation().resolve(document.getStoragePath()).normalize();
         String rawText = textExtractionService.extractTextFromFile(filePath);
         return textCleaningService.cleanText(rawText);
+    }
+
+    @Transactional(readOnly = true)
+    public List<TextChunk> extractAndChunkDocument(Long documentId, User user) {
+        String cleanedText = extractDocumentText(documentId, user);
+        return textChunkingService.chunkText(cleanedText);
     }
 
     @Transactional(readOnly = true)
