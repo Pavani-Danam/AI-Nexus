@@ -2,11 +2,14 @@ package com.ainexus.controller;
 
 import com.ainexus.dto.DocumentResponse;
 import com.ainexus.entity.Document;
+import com.ainexus.entity.DocumentChunk;
 import com.ainexus.entity.DocumentStatus;
 import com.ainexus.entity.User;
 import com.ainexus.exception.ResourceNotFoundException;
+import com.ainexus.service.DocumentChunkService;
 import com.ainexus.service.DocumentService;
 import com.ainexus.service.UserService;
+import com.ainexus.service.VectorSearchService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
@@ -24,10 +27,17 @@ import java.util.stream.Collectors;
 public class DocumentController {
 
     private final DocumentService documentService;
+    private final DocumentChunkService documentChunkService;
+    private final VectorSearchService vectorSearchService;
     private final UserService userService;
 
-    public DocumentController(DocumentService documentService, UserService userService) {
+    public DocumentController(DocumentService documentService,
+                              DocumentChunkService documentChunkService,
+                              VectorSearchService vectorSearchService,
+                              UserService userService) {
         this.documentService = documentService;
+        this.documentChunkService = documentChunkService;
+        this.vectorSearchService = vectorSearchService;
         this.userService = userService;
     }
 
@@ -54,6 +64,36 @@ public class DocumentController {
         return documentService.getDocumentById(id)
                 .map(doc -> ResponseEntity.ok(mapToResponse(doc)))
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    @GetMapping("/{id}/chunks")
+    public ResponseEntity<List<DocumentChunkResponse>> getDocumentChunks(@PathVariable Long id) {
+        Document document = documentService.getDocumentById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Document not found with id: " + id));
+
+        List<DocumentChunk> chunks = documentChunkService.getChunksByDocumentId(document.getId());
+        List<DocumentChunkResponse> responses = chunks.stream()
+                .map(c -> new DocumentChunkResponse(
+                        c.getId(),
+                        c.getChunkIndex(),
+                        c.getContent(),
+                        c.getTokenCount(),
+                        c.getEmbedding() != null && !c.getEmbedding().isEmpty(),
+                        c.getCreatedAt()))
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(responses);
+    }
+
+    @GetMapping("/search")
+    public ResponseEntity<List<VectorSearchService.SearchResult>> searchSimilarChunks(
+            @RequestParam("workspaceId") Long workspaceId,
+            @RequestParam("query") String query,
+            @RequestParam(value = "topK", defaultValue = "5") int topK,
+            @RequestParam(value = "minScore", defaultValue = "0.0") double minScore) {
+
+        List<VectorSearchService.SearchResult> results = vectorSearchService.searchSimilarChunks(workspaceId, query, topK, minScore);
+        return ResponseEntity.ok(results);
     }
 
     @GetMapping("/workspace/{workspaceId}")
@@ -106,4 +146,13 @@ public class DocumentController {
                 .updatedAt(document.getUpdatedAt())
                 .build();
     }
+
+    public record DocumentChunkResponse(
+            Long id,
+            Integer chunkIndex,
+            String content,
+            Integer tokenCount,
+            Boolean hasEmbedding,
+            java.time.LocalDateTime createdAt
+    ) {}
 }

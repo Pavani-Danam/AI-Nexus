@@ -31,7 +31,12 @@ public class DocumentChunkService {
 
     @Transactional(readOnly = true)
     public List<DocumentChunk> getChunksByDocument(Document document) {
-        return documentChunkRepository.findByDocumentOrderByChunkIndexAsc(document);
+        return documentChunkRepository.findByDocument_IdOrderByChunkIndexAsc(document.getId());
+    }
+
+    @Transactional(readOnly = true)
+    public List<DocumentChunk> getChunksByDocumentId(Long documentId) {
+        return documentChunkRepository.findByDocument_IdOrderByChunkIndexAsc(documentId);
     }
 
     public void deleteChunksByDocument(Document document) {

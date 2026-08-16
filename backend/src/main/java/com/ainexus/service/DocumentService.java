@@ -1,13 +1,18 @@
 package com.ainexus.service;
 
-import com.ainexus.entity.*;
+import com.ainexus.entity.Document;
+import com.ainexus.entity.DocumentStatus;
+import com.ainexus.entity.User;
+import com.ainexus.entity.Workspace;
+import com.ainexus.exception.FileStorageException;
 import com.ainexus.exception.ResourceNotFoundException;
+import com.ainexus.exception.UnauthorizedAccessException;
 import com.ainexus.repository.DocumentRepository;
+import com.ainexus.repository.UserRepository;
 import com.ainexus.repository.WorkspaceMemberRepository;
 import com.ainexus.repository.WorkspaceRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -24,56 +29,63 @@ public class DocumentService {
     private static final List<String> ALLOWED_EXTENSIONS = Arrays.asList(".pdf", ".docx", ".txt");
 
     private final DocumentRepository documentRepository;
+    private final FileStorageService fileStorageService;
     private final WorkspaceRepository workspaceRepository;
     private final WorkspaceMemberRepository workspaceMemberRepository;
-    private final FileStorageService fileStorageService;
+    private final UserRepository userRepository;
 
     public DocumentService(DocumentRepository documentRepository,
+                           FileStorageService fileStorageService,
                            WorkspaceRepository workspaceRepository,
                            WorkspaceMemberRepository workspaceMemberRepository,
-                           FileStorageService fileStorageService) {
+                           UserRepository userRepository) {
         this.documentRepository = documentRepository;
+        this.fileStorageService = fileStorageService;
         this.workspaceRepository = workspaceRepository;
         this.workspaceMemberRepository = workspaceMemberRepository;
-        this.fileStorageService = fileStorageService;
+        this.userRepository = userRepository;
     }
 
     public Document uploadDocument(MultipartFile file, Long workspaceId, User user) {
         if (file == null || file.isEmpty()) {
-            throw new IllegalArgumentException("File cannot be empty");
+            throw new IllegalArgumentException("File cannot be empty or missing");
         }
 
         String originalFilename = file.getOriginalFilename();
         if (originalFilename == null || originalFilename.trim().isEmpty()) {
-            throw new IllegalArgumentException("Invalid filename");
+            throw new IllegalArgumentException("Original filename cannot be empty");
         }
 
         String lowerFilename = originalFilename.toLowerCase();
-        boolean hasValidExt = ALLOWED_EXTENSIONS.stream().anyMatch(lowerFilename::endsWith);
-        if (!hasValidExt) {
+        boolean isValidExtension = ALLOWED_EXTENSIONS.stream().anyMatch(lowerFilename::endsWith);
+        if (!isValidExtension) {
             throw new IllegalArgumentException("Unsupported file type. Allowed formats: .pdf, .docx, .txt");
+        }
+
+        if (user == null || user.getId() == null) {
+            throw new ResourceNotFoundException("Authenticated user not found");
         }
 
         Workspace workspace = workspaceRepository.findById(workspaceId)
                 .orElseThrow(() -> new ResourceNotFoundException("Workspace not found with id: " + workspaceId));
 
+        // Workspace Authorization Check: Must be Owner or Member
         boolean isOwner = workspace.getOwner() != null && workspace.getOwner().getId().equals(user.getId());
         boolean isMember = workspaceMemberRepository.findByWorkspaceAndUser(workspace, user).isPresent();
 
         if (!isOwner && !isMember) {
-            throw new AccessDeniedException("User is not authorized to upload documents to this workspace");
+            throw new UnauthorizedAccessException("User is not authorized to upload to this workspace");
         }
 
-        String storedPath = null;
+        String storagePath = null;
         try {
-            storedPath = fileStorageService.storeFile(file.getInputStream(), originalFilename, workspace.getId());
+            storagePath = fileStorageService.storeFile(file.getInputStream(), originalFilename, workspaceId);
 
             Document document = Document.builder()
                     .fileName(originalFilename)
-                    .originalFilename(originalFilename)
                     .fileType(file.getContentType())
                     .fileSize(file.getSize())
-                    .storagePath(storedPath)
+                    .storagePath(storagePath)
                     .status(DocumentStatus.UPLOADED)
                     .workspace(workspace)
                     .user(user)
@@ -81,26 +93,22 @@ public class DocumentService {
 
             return documentRepository.save(document);
         } catch (IOException e) {
-            if (storedPath != null) {
-                fileStorageService.deleteFile(storedPath);
+            if (storagePath != null) {
+                fileStorageService.deleteFile(storagePath);
             }
-            throw new RuntimeException("Failed to read upload file stream", e);
+            throw new FileStorageException("Failed to store physical file", e);
         } catch (Exception e) {
-            if (storedPath != null) {
-                fileStorageService.deleteFile(storedPath);
+            if (storagePath != null) {
+                fileStorageService.deleteFile(storagePath);
             }
             throw e;
         }
     }
 
-    public Document saveDocument(Document document) {
-        if (document.getFileName() == null || document.getFileName().trim().isEmpty()) {
-            throw new IllegalArgumentException("Document filename cannot be empty");
-        }
-        if (document.getStoragePath() == null || document.getStoragePath().trim().isEmpty()) {
-            throw new IllegalArgumentException("Document storage path cannot be empty");
-        }
-        return documentRepository.save(document);
+    public Document uploadDocument(MultipartFile file, Long workspaceId, Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + userId));
+        return uploadDocument(file, workspaceId, user);
     }
 
     @Transactional(readOnly = true)
@@ -109,41 +117,36 @@ public class DocumentService {
     }
 
     @Transactional(readOnly = true)
-    public List<Document> getDocumentsByUser(User user) {
-        return documentRepository.findByUser(user);
+    public Page<Document> getDocumentsByWorkspace(Long workspaceId, Pageable pageable) {
+        Workspace workspace = workspaceRepository.findById(workspaceId)
+                .orElseThrow(() -> new ResourceNotFoundException("Workspace not found with id: " + workspaceId));
+        return documentRepository.findByWorkspace(workspace, pageable);
     }
 
     @Transactional(readOnly = true)
-    public List<Document> getDocumentsByWorkspace(Workspace workspace) {
+    public List<Document> getDocumentsByWorkspace(Long workspaceId) {
+        Workspace workspace = workspaceRepository.findById(workspaceId)
+                .orElseThrow(() -> new ResourceNotFoundException("Workspace not found with id: " + workspaceId));
         return documentRepository.findByWorkspace(workspace);
     }
 
     @Transactional(readOnly = true)
-    public Page<Document> getDocumentsByWorkspace(Long workspaceId, Pageable pageable) {
-        return documentRepository.findByWorkspaceId(workspaceId, pageable);
-    }
-
-    @Transactional(readOnly = true)
-    public List<Document> getDocumentsByStatus(DocumentStatus status) {
-        return documentRepository.findByStatus(status);
+    public List<Document> getDocumentsByUser(User user) {
+        return documentRepository.findByUser(user);
     }
 
     public Document updateDocumentStatus(Long id, DocumentStatus status) {
-        return documentRepository.findById(id)
-                .map(doc -> {
-                    doc.setStatus(status);
-                    return documentRepository.save(doc);
-                })
+        Document document = documentRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Document not found with id: " + id));
+        document.setStatus(status);
+        return documentRepository.save(document);
     }
 
     public void deleteDocument(Long id) {
         Document document = documentRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Document not found with id: " + id));
 
-        if (document.getStoragePath() != null) {
-            fileStorageService.deleteFile(document.getStoragePath());
-        }
+        fileStorageService.deleteFile(document.getStoragePath());
         documentRepository.delete(document);
     }
 }

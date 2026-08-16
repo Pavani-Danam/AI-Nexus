@@ -1,0 +1,9 @@
+AI-Nexus Document Ingestion & RAG Architecture.
+Section 1: Asynchronous Processing Pipeline.
+The pipeline extracts text from uploaded documents, creates semantic chunks with configurable overlap, and estimates token lengths.
+
+Section 2: Vector Embedding & Search.
+Each document chunk will be vectorized into high-dimensional embeddings and indexed in a vector store for fast similarity retrieval.
+
+Section 3: Contextual Augmentation.
+The retrieved chunks are augmented into LLM prompts for grounded response generation.

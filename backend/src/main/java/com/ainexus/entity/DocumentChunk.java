@@ -29,6 +29,10 @@ public class DocumentChunk {
     @Column(name = "token_count")
     private Integer tokenCount;
 
+    @Lob
+    @Column(name = "embedding", columnDefinition = "LONGTEXT")
+    private String embedding;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "document_id", nullable = false)
     private Document document;
