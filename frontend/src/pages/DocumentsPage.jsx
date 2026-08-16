@@ -7,49 +7,72 @@ import api from '../services/api';
 export default function DocumentsPage() {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedFilter, setSelectedFilter] = useState('ALL');
   const [documents, setDocuments] = useState([]);
   const [workspaceId, setWorkspaceId] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState('');
 
-  // Fetch workspace and documents on load
-  const loadDocuments = useCallback(async () => {
-    try {
-      const userRes = await api.get('/auth/me').catch(() => null);
-      const userId = userRes?.data?.id;
-      if (!userId) return;
+  // Debounce search query
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [searchQuery]);
 
-      const wsRes = await api.get(`/workspaces?ownerId=${userId}`);
-      const workspaces = wsRes.data;
-      if (workspaces && workspaces.length > 0) {
-        const activeWsId = workspaces[0].id;
-        setWorkspaceId(activeWsId);
+  // Fetch active workspace ID
+  useEffect(() => {
+    const initWorkspace = async () => {
+      try {
+        const userRes = await api.get('/auth/me').catch(() => null);
+        const userId = userRes?.data?.id;
+        if (!userId) return;
 
-        const docs = await documentService.getDocumentsByWorkspace(activeWsId);
-        setDocuments(docs);
+        const wsRes = await api.get(`/workspaces?ownerId=${userId}`);
+        const workspaces = wsRes.data;
+        if (workspaces && workspaces.length > 0) {
+          setWorkspaceId(workspaces[0].id);
+        }
+      } catch (err) {
+        console.error('Failed to initialize workspace:', err);
       }
+    };
+    initWorkspace();
+  }, []);
+
+  // Fetch documents using backend search
+  const loadDocuments = useCallback(async () => {
+    if (!workspaceId) return;
+    try {
+      setErrorMessage('');
+      const docs = await documentService.getDocuments(workspaceId, debouncedSearch);
+      setDocuments(docs);
     } catch (err) {
       console.error('Failed to load documents:', err);
+      setErrorMessage('Unable to retrieve documents. Please try again.');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [workspaceId, debouncedSearch]);
 
   useEffect(() => {
-    loadDocuments();
-  }, [loadDocuments]);
+    if (workspaceId) {
+      loadDocuments();
+    }
+  }, [workspaceId, debouncedSearch, loadDocuments]);
 
-  // Polling mechanism to check processing status for non-terminal documents
+  // Polling for processing status on active documents
   useEffect(() => {
     const hasUnfinished = documents.some(
       (doc) => doc.status === 'UPLOADED' || doc.status === 'PROCESSING'
     );
-    if (!hasUnfinished) return;
+    if (!hasUnfinished || !workspaceId) return;
 
     const interval = setInterval(async () => {
-      if (!workspaceId) return;
       try {
-        const docs = await documentService.getDocumentsByWorkspace(workspaceId);
+        const docs = await documentService.getDocuments(workspaceId, debouncedSearch);
         setDocuments(docs);
       } catch (err) {
         console.error('Polling error:', err);
@@ -57,18 +80,31 @@ export default function DocumentsPage() {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [documents, workspaceId]);
+  }, [documents, workspaceId, debouncedSearch]);
 
-  // Client-side search and filtering logic
+  // Handle document deletion
+  const handleDeleteDocument = async (docId) => {
+    try {
+      setErrorMessage('');
+      await documentService.deleteDocument(docId);
+      setDocuments((prev) => prev.filter((d) => d.id !== docId));
+    } catch (err) {
+      console.error('Delete failed:', err);
+      setErrorMessage('Failed to delete the document. Please try again.');
+    }
+  };
+
+  // Extension/type filter
   const filteredDocuments = useMemo(() => {
     return documents.filter((doc) => {
-      const name = doc.fileName || doc.name || '';
-      const type = doc.fileType || doc.type || '';
-      const matchesSearch = name.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesFilter = selectedFilter === 'ALL' || type.toUpperCase().includes(selectedFilter);
-      return matchesSearch && matchesFilter;
+      const type = (doc.fileType || doc.fileName || '').toUpperCase();
+      if (selectedFilter === 'ALL') return true;
+      if (selectedFilter === 'PDF') return type.includes('PDF');
+      if (selectedFilter === 'DOCX') return type.includes('WORD') || type.includes('DOCX');
+      if (selectedFilter === 'TXT') return type.includes('PLAIN') || type.includes('TXT');
+      return true;
     });
-  }, [documents, searchQuery, selectedFilter]);
+  }, [documents, selectedFilter]);
 
   const filterOptions = ['ALL', 'PDF', 'DOCX', 'TXT'];
 
@@ -93,6 +129,13 @@ export default function DocumentsPage() {
           Upload Document
         </button>
       </div>
+
+      {/* Error Alert */}
+      {errorMessage && (
+        <div className="p-3 bg-rose-500/15 border border-rose-500/30 rounded-xl text-xs text-rose-300">
+          {errorMessage}
+        </div>
+      )}
 
       {/* Search & Filter Controls */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
@@ -119,7 +162,7 @@ export default function DocumentsPage() {
               key={opt}
               type="button"
               onClick={() => setSelectedFilter(opt)}
-              className={`px-3 py-1 rounded-lg text-xs font-medium transition-all ${
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                 selectedFilter === opt
                   ? 'bg-indigo-600 text-white shadow-xs'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
@@ -136,6 +179,7 @@ export default function DocumentsPage() {
         documents={filteredDocuments}
         loading={loading}
         onOpenUpload={() => setIsUploadOpen(true)}
+        onDeleteDocument={handleDeleteDocument}
       />
 
       {/* Upload Modal */}

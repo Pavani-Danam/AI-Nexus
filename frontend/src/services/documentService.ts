@@ -28,20 +28,22 @@ export const documentService = {
     return response.data;
   },
 
+  getDocuments: async (workspaceId: number, search?: string): Promise<DocumentResponse[]> => {
+    const params: Record<string, string> = { workspaceId: workspaceId.toString() };
+    if (search && search.trim() !== '') {
+      params.search = search.trim();
+    }
+    const response = await api.get<DocumentResponse[]>('/documents', { params });
+    return Array.isArray(response.data) ? response.data : [];
+  },
+
   getDocumentById: async (id: number): Promise<DocumentResponse> => {
     const response = await api.get<DocumentResponse>(`/documents/${id}`);
     return response.data;
   },
 
-  getDocumentsByWorkspace: async (workspaceId: number): Promise<DocumentResponse[]> => {
-    const response = await api.get<any>(`/documents/workspace/${workspaceId}`);
-    // Backend returns Page<DocumentResponse> or List<DocumentResponse>
-    if (response.data && Array.isArray(response.data.content)) {
-      return response.data.content;
-    }
-    if (Array.isArray(response.data)) {
-      return response.data;
-    }
-    return [];
+  deleteDocument: async (id: number): Promise<{ message: string }> => {
+    const response = await api.delete<{ message: string }>(`/documents/${id}`);
+    return response.data;
   },
 };

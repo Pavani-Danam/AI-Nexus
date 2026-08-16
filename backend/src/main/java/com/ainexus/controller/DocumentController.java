@@ -40,16 +40,24 @@ public class DocumentController {
             @RequestParam("workspaceId") Long workspaceId,
             Authentication authentication) {
 
-        if (authentication == null || authentication.getName() == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-
-        User user = userService.getUserByUsername(authentication.getName())
-                .or(() -> userService.getUserByEmail(authentication.getName()))
-                .orElseThrow(() -> new ResourceNotFoundException("Authenticated user not found"));
-
+        User user = getAuthenticatedUser(authentication);
         Document saved = documentService.uploadDocument(file, workspaceId, user);
         return ResponseEntity.status(HttpStatus.CREATED).body(mapToResponse(saved));
+    }
+
+    @GetMapping
+    public ResponseEntity<List<DocumentResponse>> getDocuments(
+            @RequestParam("workspaceId") Long workspaceId,
+            @RequestParam(value = "search", required = false) String search,
+            Authentication authentication) {
+
+        User user = getAuthenticatedUser(authentication);
+        List<DocumentResponse> documents = documentService.getDocuments(workspaceId, user, search)
+                .stream()
+                .map(this::mapToResponse)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(documents);
     }
 
     @GetMapping("/{id}")
@@ -57,14 +65,7 @@ public class DocumentController {
             @PathVariable Long id,
             Authentication authentication) {
 
-        if (authentication == null || authentication.getName() == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-
-        User user = userService.getUserByUsername(authentication.getName())
-                .or(() -> userService.getUserByEmail(authentication.getName()))
-                .orElseThrow(() -> new ResourceNotFoundException("Authenticated user not found"));
-
+        User user = getAuthenticatedUser(authentication);
         Document doc = documentService.getDocumentByIdAndUser(id, user);
         return ResponseEntity.ok(mapToResponse(doc));
     }
@@ -74,14 +75,7 @@ public class DocumentController {
             @PathVariable Long id,
             Authentication authentication) {
 
-        if (authentication == null || authentication.getName() == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-
-        User user = userService.getUserByUsername(authentication.getName())
-                .or(() -> userService.getUserByEmail(authentication.getName()))
-                .orElseThrow(() -> new ResourceNotFoundException("Authenticated user not found"));
-
+        User user = getAuthenticatedUser(authentication);
         String text = documentService.extractDocumentText(id, user);
         return ResponseEntity.ok(Map.of(
                 "documentId", id,
@@ -95,14 +89,7 @@ public class DocumentController {
             @PathVariable Long id,
             Authentication authentication) {
 
-        if (authentication == null || authentication.getName() == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-
-        User user = userService.getUserByUsername(authentication.getName())
-                .or(() -> userService.getUserByEmail(authentication.getName()))
-                .orElseThrow(() -> new ResourceNotFoundException("Authenticated user not found"));
-
+        User user = getAuthenticatedUser(authentication);
         List<TextChunk> chunks = documentService.extractAndChunkDocument(id, user);
         return ResponseEntity.ok(Map.of(
                 "documentId", id,
@@ -143,9 +130,22 @@ public class DocumentController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> deleteDocument(@PathVariable Long id) {
-        documentService.deleteDocument(id);
-        return ResponseEntity.noContent().build();
+    public ResponseEntity<Map<String, String>> deleteDocument(
+            @PathVariable Long id,
+            Authentication authentication) {
+
+        User user = getAuthenticatedUser(authentication);
+        documentService.deleteDocument(id, user);
+        return ResponseEntity.ok(Map.of("message", "Document successfully deleted"));
+    }
+
+    private User getAuthenticatedUser(Authentication authentication) {
+        if (authentication == null || authentication.getName() == null) {
+            throw new ResourceNotFoundException("Authentication required");
+        }
+        return userService.getUserByUsername(authentication.getName())
+                .or(() -> userService.getUserByEmail(authentication.getName()))
+                .orElseThrow(() -> new ResourceNotFoundException("Authenticated user not found"));
     }
 
     private DocumentResponse mapToResponse(Document document) {

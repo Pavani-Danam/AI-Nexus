@@ -12,6 +12,8 @@ import com.ainexus.repository.DocumentRepository;
 import com.ainexus.repository.UserRepository;
 import com.ainexus.repository.WorkspaceMemberRepository;
 import com.ainexus.repository.WorkspaceRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -28,6 +30,8 @@ import java.util.Optional;
 @Service
 @Transactional
 public class DocumentService {
+
+    private static final Logger logger = LoggerFactory.getLogger(DocumentService.class);
 
     private final DocumentRepository documentRepository;
     private final FileStorageService fileStorageService;
@@ -72,12 +76,7 @@ public class DocumentService {
         Workspace workspace = workspaceRepository.findById(workspaceId)
                 .orElseThrow(() -> new ResourceNotFoundException("Workspace not found with id: " + workspaceId));
 
-        boolean isOwner = workspace.getOwner() != null && workspace.getOwner().getId().equals(user.getId());
-        boolean isMember = workspaceMemberRepository.findByWorkspaceAndUser(workspace, user).isPresent();
-
-        if (!isOwner && !isMember) {
-            throw new UnauthorizedAccessException("User is not authorized to upload to this workspace");
-        }
+        validateUserWorkspaceAccess(workspace, user);
 
         String storagePath = null;
         try {
@@ -96,7 +95,6 @@ public class DocumentService {
             Document saved = documentRepository.save(document);
             Long savedId = saved.getId();
 
-            // Register async execution to run strictly AFTER the database transaction commits
             if (TransactionSynchronizationManager.isActualTransactionActive()) {
                 TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                     @Override
@@ -129,18 +127,22 @@ public class DocumentService {
     }
 
     @Transactional(readOnly = true)
+    public List<Document> getDocuments(Long workspaceId, User user, String search) {
+        Workspace workspace = workspaceRepository.findById(workspaceId)
+                .orElseThrow(() -> new ResourceNotFoundException("Workspace not found with id: " + workspaceId));
+
+        validateUserWorkspaceAccess(workspace, user);
+
+        String cleanSearch = (search != null && !search.trim().isEmpty()) ? search.trim() : null;
+        return documentRepository.findByWorkspaceAndSearch(workspace, cleanSearch);
+    }
+
+    @Transactional(readOnly = true)
     public Document getDocumentByIdAndUser(Long documentId, User user) {
         Document document = documentRepository.findById(documentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Document not found with id: " + documentId));
 
-        Workspace workspace = document.getWorkspace();
-        boolean isOwner = workspace.getOwner() != null && workspace.getOwner().getId().equals(user.getId());
-        boolean isMember = workspaceMemberRepository.findByWorkspaceAndUser(workspace, user).isPresent();
-
-        if (!isOwner && !isMember) {
-            throw new UnauthorizedAccessException("User is not authorized to access this document");
-        }
-
+        validateUserWorkspaceAccess(document.getWorkspace(), user);
         return document;
     }
 
@@ -189,11 +191,44 @@ public class DocumentService {
         return documentRepository.save(document);
     }
 
+    public void deleteDocument(Long id, User user) {
+        Document document = documentRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Document not found with id: " + id));
+
+        validateUserWorkspaceAccess(document.getWorkspace(), user);
+
+        try {
+            fileStorageService.deleteFile(document.getStoragePath());
+        } catch (Exception e) {
+            logger.warn("Could not delete physical file at {}: {}", document.getStoragePath(), e.getMessage());
+        }
+
+        documentRepository.delete(document);
+        logger.info("Deleted document id {} by user {}", id, user.getId());
+    }
+
     public void deleteDocument(Long id) {
         Document document = documentRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Document not found with id: " + id));
 
-        fileStorageService.deleteFile(document.getStoragePath());
+        try {
+            fileStorageService.deleteFile(document.getStoragePath());
+        } catch (Exception e) {
+            logger.warn("Could not delete physical file at {}: {}", document.getStoragePath(), e.getMessage());
+        }
+
         documentRepository.delete(document);
+    }
+
+    private void validateUserWorkspaceAccess(Workspace workspace, User user) {
+        if (user == null || user.getId() == null) {
+            throw new UnauthorizedAccessException("Authentication required");
+        }
+        boolean isOwner = workspace.getOwner() != null && workspace.getOwner().getId().equals(user.getId());
+        boolean isMember = workspaceMemberRepository.findByWorkspaceAndUser(workspace, user).isPresent();
+
+        if (!isOwner && !isMember) {
+            throw new UnauthorizedAccessException("User is not authorized to access this workspace's documents");
+        }
     }
 }
