@@ -1,90 +1,145 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
-import { DocumentIcon, WorkspaceIcon, ChatIcon } from '../components/ui/Icons';
+import { useAuth } from '../context/AuthContext';
+import { StatCard, QuickActionButton, EmptyStateCard, KnowledgeStatusItem } from '../components/dashboard/DashboardWidgets';
+
+// Simple lightweight SVG icons
+const DocIcon = ({ className }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+  </svg>
+);
+
+const WorkspaceIcon = ({ className }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+  </svg>
+);
+
+const ChatIcon = ({ className }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+  </svg>
+);
+
+const DatabaseIcon = ({ className }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+  </svg>
+);
+
+const UploadIcon = ({ className }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+  </svg>
+);
+
+const ActivityIcon = ({ className }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+  </svg>
+);
 
 export default function DashboardPage() {
-  const stats = [
-    { title: 'Documents', value: '0', description: 'Indexed in knowledge base', icon: DocumentIcon, link: '/documents' },
-    { title: 'Workspaces', value: '0', description: 'Active team environments', icon: WorkspaceIcon, link: '/workspaces' },
-    { title: 'AI Conversations', value: '0', description: 'Active reasoning sessions', icon: ChatIcon, link: '/chat' },
-    { title: 'Knowledge Sources', value: '0', description: 'Vector embeddings ready', icon: DocumentIcon, link: '/documents' },
-  ];
+  const { user } = useAuth();
+  const userName = user?.name || user?.fullName || 'User';
 
   return (
     <div className="space-y-8">
-      {/* Welcome Banner */}
-      <div className="p-6 sm:p-8 rounded-2xl bg-gradient-to-r from-indigo-900/40 via-slate-900 to-slate-900 border border-indigo-500/20 shadow-xs">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 mb-3">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          System Online
-        </div>
-        <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white tracking-tight">
-          Welcome to AI-Nexus
-        </h2>
-        <p className="text-slate-600 dark:text-slate-400 mt-1 text-sm sm:text-base max-w-2xl">
-          Enterprise AI Knowledge Operating System — Manage vectorized knowledge bases, configure multi-agent orchestration, and explore contextual synthesis.
+      {/* Header */}
+      <div>
+        <h1 className="text-2xl font-bold text-slate-100 tracking-tight">
+          Welcome back, {userName}
+        </h1>
+        <p className="text-xs text-slate-400 mt-1">
+          Manage your organization's knowledge base and interact with AI agents.
         </p>
       </div>
 
-      {/* Metric Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        {stats.map((stat) => (
-          <Link
-            key={stat.title}
-            to={stat.link}
-            className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-500/40 dark:hover:border-indigo-500/40 transition-all shadow-xs group"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                {stat.title}
-              </span>
-              <div className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 group-hover:bg-indigo-50 dark:group-hover:bg-indigo-500/20 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                <stat.icon className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="mt-4 flex items-baseline gap-2">
-              <span className="text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
-                {stat.value}
-              </span>
-            </div>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              {stat.description}
-            </p>
-          </Link>
-        ))}
+      {/* Quick Statistics Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          title="Documents"
+          value="0"
+          label="Total Documents"
+          icon={DocIcon}
+          color="indigo"
+        />
+        <StatCard
+          title="Workspaces"
+          value="0"
+          label="Active Workspaces"
+          icon={WorkspaceIcon}
+          color="cyan"
+        />
+        <StatCard
+          title="Conversations"
+          value="0"
+          label="AI Conversations"
+          icon={ChatIcon}
+          color="purple"
+        />
+        <StatCard
+          title="Knowledge Sources"
+          value="0"
+          label="Knowledge Sources"
+          icon={DatabaseIcon}
+          color="emerald"
+        />
       </div>
 
-      {/* Quick Access Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs">
-          <h3 className="text-base font-semibold text-slate-900 dark:text-white mb-2">
-            Knowledge Ingestion
-          </h3>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
-            Upload PDF, DOCX, and TXT files to generate embeddings and vectorize knowledge for agent retrieval.
-          </p>
-          <Link
-            to="/documents"
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors shadow-xs"
-          >
-            Upload Document
-          </Link>
+      {/* Quick Actions & Knowledge Overview */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Quick Actions (2 cols on large screen) */}
+        <div className="lg:col-span-2 space-y-3">
+          <h2 className="text-sm font-semibold text-slate-200">Quick Actions</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <QuickActionButton
+              title="Upload Document"
+              description="Ingest PDFs, Word files, or Markdown documents"
+              to="/documents"
+              icon={UploadIcon}
+            />
+            <QuickActionButton
+              title="Open AI Chat"
+              description="Ask questions grounded in indexed knowledge"
+              to="/chat"
+              icon={ChatIcon}
+            />
+            <QuickActionButton
+              title="Create Workspace"
+              description="Set up isolated departmental knowledge zones"
+              to="/workspaces"
+              icon={WorkspaceIcon}
+            />
+            <QuickActionButton
+              title="View Documents"
+              description="Browse and audit all uploaded repository assets"
+              to="/documents"
+              icon={DocIcon}
+            />
+          </div>
         </div>
 
-        <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs">
-          <h3 className="text-base font-semibold text-slate-900 dark:text-white mb-2">
-            AI Knowledge Assistant
-          </h3>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
-            Query your ingested knowledge base with contextual RAG and multi-step reasoning capabilities.
-          </p>
-          <Link
-            to="/chat"
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
-          >
-            Start Conversation
-          </Link>
+        {/* Knowledge Overview (1 col) */}
+        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+          <h2 className="text-sm font-semibold text-slate-200">Knowledge Overview</h2>
+          <div className="divide-y divide-slate-800/60">
+            <KnowledgeStatusItem label="Indexed Documents" count="0" color="emerald" />
+            <KnowledgeStatusItem label="Queued for Processing" count="0" color="amber" />
+            <KnowledgeStatusItem label="Failed Ingestions" count="0" color="rose" />
+            <KnowledgeStatusItem label="Vector Embeddings" count="0" color="indigo" />
+          </div>
         </div>
+      </div>
+
+      {/* Recent Activity Section */}
+      <div className="space-y-3">
+        <h2 className="text-sm font-semibold text-slate-200">Recent Activity</h2>
+        <EmptyStateCard
+          icon={ActivityIcon}
+          title="No recent activity"
+          message="Your document uploads, ingestion statuses, and AI chat sessions will appear here once active."
+        />
       </div>
     </div>
   );

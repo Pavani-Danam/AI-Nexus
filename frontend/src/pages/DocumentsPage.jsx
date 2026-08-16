@@ -1,50 +1,96 @@
-import React from 'react';
-import { DocumentIcon } from '../components/ui/Icons';
+import React, { useState, useMemo } from 'react';
+import { DocumentTable } from '../components/documents/DocumentTable';
+import DocumentUploadModal from '../components/documents/DocumentUploadModal';
 
 export default function DocumentsPage() {
+  const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedFilter, setSelectedFilter] = useState('ALL');
+
+  // Prepared for API data integration in Step 23
+  const [documents] = useState([]);
+
+  // Client-side search and filtering logic
+  const filteredDocuments = useMemo(() => {
+    return documents.filter((doc) => {
+      const matchesSearch = doc.name?.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesFilter = selectedFilter === 'ALL' || doc.type?.toUpperCase() === selectedFilter;
+      return matchesSearch && matchesFilter;
+    });
+  }, [documents, searchQuery, selectedFilter]);
+
+  const filterOptions = ['ALL', 'PDF', 'DOCX', 'TXT'];
+
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-          Documents
-        </h2>
-        <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-          Manage and search your organization's knowledge.
-        </p>
-      </div>
-
-      {/* Upload Dropzone Placeholder */}
-      <div className="p-8 sm:p-12 border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-indigo-500/50 rounded-2xl bg-white dark:bg-slate-900/50 text-center transition-all">
-        <div className="w-12 h-12 mx-auto rounded-2xl bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mb-4">
-          <DocumentIcon className="w-6 h-6" />
+      {/* Page Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-100 tracking-tight">Documents</h1>
+          <p className="text-xs text-slate-400 mt-1">
+            Manage the knowledge sources used by your organization.
+          </p>
         </div>
-        <h3 className="text-base font-semibold text-slate-900 dark:text-white mb-1">
-          Upload documents
-        </h3>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-          Drag and drop your knowledge files here or browse from your computer
-        </p>
-        <p className="text-xs font-semibold text-slate-400 dark:text-slate-500 mb-6 uppercase tracking-wider">
-          Supported formats: PDF, DOCX, TXT
-        </p>
         <button
           type="button"
-          className="px-4 py-2 rounded-xl text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors shadow-xs"
+          onClick={() => setIsUploadOpen(true)}
+          className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-600/20 transition-all cursor-pointer"
         >
-          Select Files
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+          </svg>
+          Upload Document
         </button>
       </div>
 
-      {/* Empty State / Documents Table Placeholder */}
-      <div className="p-8 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center">
-        <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
-          No documents uploaded yet
-        </p>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-          Ingested documents will appear here with chunk counts and vectorization status.
-        </p>
+      {/* Search & Filter Controls */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+        {/* Search Bar */}
+        <div className="relative flex-1 max-w-md">
+          <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </span>
+          <input
+            type="text"
+            placeholder="Search documents by name..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-9 pr-4 py-2 bg-slate-900/90 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder-slate-500 focus:outline-hidden focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition-all"
+          />
+        </div>
+
+        {/* Filter Pills */}
+        <div className="flex items-center gap-1 bg-slate-900/90 p-1 border border-slate-800 rounded-xl">
+          {filterOptions.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => setSelectedFilter(opt)}
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-all ${
+                selectedFilter === opt
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+              }`}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* Document List / Empty State */}
+      <DocumentTable
+        documents={filteredDocuments}
+        onOpenUpload={() => setIsUploadOpen(true)}
+      />
+
+      {/* Upload Modal */}
+      <DocumentUploadModal
+        isOpen={isUploadOpen}
+        onClose={() => setIsUploadOpen(false)}
+      />
     </div>
   );
 }
