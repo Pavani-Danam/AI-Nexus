@@ -1,16 +1,19 @@
 import axios from 'axios';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080/api';
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080/api/v1',
+  baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
+  timeout: 15000,
 });
 
-// Request Interceptor: Attach Access Token
+// Request Interceptor: Attach JWT Bearer token
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('accessToken');
+    const token = localStorage.getItem('nexus_access_token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -19,53 +22,90 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response Interceptor: Handle 401 & Refresh Token
+// Response Interceptor: Auto-refresh access token on 401
+let isRefreshing = false;
+let failedQueue = [];
+
+const processQueue = (error, token = null) => {
+  failedQueue.forEach((prom) => {
+    if (error) {
+      prom.reject(error);
+    } else {
+      prom.resolve(token);
+    }
+  });
+  failedQueue = [];
+};
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
 
-    // Avoid infinite loop on login/register/refresh endpoints or retried requests
-    if (
-      error.response?.status === 401 &&
-      !originalRequest._retry &&
-      !originalRequest.url.includes('/auth/login') &&
-      !originalRequest.url.includes('/auth/register') &&
-      !originalRequest.url.includes('/auth/refresh')
-    ) {
+    // If request failed with 401 and hasn't been retried yet
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      // Don't attempt to refresh if the failed request was already login or refresh
+      if (
+        originalRequest.url.includes('/auth/login') ||
+        originalRequest.url.includes('/auth/refresh')
+      ) {
+        return Promise.reject(error);
+      }
+
+      if (isRefreshing) {
+        return new Promise((resolve, reject) => {
+          failedQueue.push({ resolve, reject });
+        })
+          .then((token) => {
+            originalRequest.headers.Authorization = `Bearer ${token}`;
+            return api(originalRequest);
+          })
+          .catch((err) => Promise.reject(err));
+      }
+
       originalRequest._retry = true;
-      const refreshToken = localStorage.getItem('refreshToken');
+      isRefreshing = true;
 
-      if (refreshToken) {
-        try {
-          // Attempt token refresh
-          const response = await axios.post(
-            `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080/api/v1'}/auth/refresh`,
-            { refreshToken }
-          );
+      const refreshToken = localStorage.getItem('nexus_refresh_token');
 
-          const { accessToken, refreshToken: newRefreshToken } = response.data;
-
-          localStorage.setItem('accessToken', accessToken);
-          if (newRefreshToken) {
-            localStorage.setItem('refreshToken', newRefreshToken);
-          }
-
-          // Retry the original failed request with the new token
-          originalRequest.headers.Authorization = `Bearer ${accessToken}`;
-          return api(originalRequest);
-        } catch (refreshError) {
-          // Token refresh failed - clean storage
-          localStorage.removeItem('accessToken');
-          localStorage.removeItem('refreshToken');
-          localStorage.removeItem('user');
-          window.location.href = '/login';
-          return Promise.reject(refreshError);
-        }
-      } else {
-        localStorage.removeItem('accessToken');
-        localStorage.removeItem('user');
+      if (!refreshToken) {
+        isRefreshing = false;
+        localStorage.removeItem('nexus_access_token');
+        localStorage.removeItem('nexus_refresh_token');
+        localStorage.removeItem('nexus_user');
         window.location.href = '/login';
+        return Promise.reject(error);
+      }
+
+      try {
+        const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {
+          refreshToken,
+        });
+
+        const { accessToken, refreshToken: newRefreshToken, user } = response.data;
+
+        localStorage.setItem('nexus_access_token', accessToken);
+        if (newRefreshToken) {
+          localStorage.setItem('nexus_refresh_token', newRefreshToken);
+        }
+        if (user) {
+          localStorage.setItem('nexus_user', JSON.stringify(user));
+        }
+
+        api.defaults.headers.common.Authorization = `Bearer ${accessToken}`;
+        originalRequest.headers.Authorization = `Bearer ${accessToken}`;
+
+        processQueue(null, accessToken);
+        return api(originalRequest);
+      } catch (refreshError) {
+        processQueue(refreshError, null);
+        localStorage.removeItem('nexus_access_token');
+        localStorage.removeItem('nexus_refresh_token');
+        localStorage.removeItem('nexus_user');
+        window.location.href = '/login';
+        return Promise.reject(refreshError);
+      } finally {
+        isRefreshing = false;
       }
     }
 
