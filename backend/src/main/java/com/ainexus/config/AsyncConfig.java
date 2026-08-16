@@ -17,7 +17,7 @@ public class AsyncConfig {
         executor.setCorePoolSize(4);
         executor.setMaxPoolSize(8);
         executor.setQueueCapacity(50);
-        executor.setThreadNamePrefix("DocProcess-");
+        executor.setThreadNamePrefix("doc-exec-");
         executor.initialize();
         return executor;
     }

@@ -16,6 +16,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -33,6 +35,7 @@ public class DocumentService {
     private final DocumentTextExtractionService textExtractionService;
     private final DocumentTextCleaningService textCleaningService;
     private final DocumentTextChunkingService textChunkingService;
+    private final DocumentProcessingService documentProcessingService;
     private final WorkspaceRepository workspaceRepository;
     private final WorkspaceMemberRepository workspaceMemberRepository;
     private final UserRepository userRepository;
@@ -43,6 +46,7 @@ public class DocumentService {
                            DocumentTextExtractionService textExtractionService,
                            DocumentTextCleaningService textCleaningService,
                            DocumentTextChunkingService textChunkingService,
+                           DocumentProcessingService documentProcessingService,
                            WorkspaceRepository workspaceRepository,
                            WorkspaceMemberRepository workspaceMemberRepository,
                            UserRepository userRepository) {
@@ -52,6 +56,7 @@ public class DocumentService {
         this.textExtractionService = textExtractionService;
         this.textCleaningService = textCleaningService;
         this.textChunkingService = textChunkingService;
+        this.documentProcessingService = documentProcessingService;
         this.workspaceRepository = workspaceRepository;
         this.workspaceMemberRepository = workspaceMemberRepository;
         this.userRepository = userRepository;
@@ -88,7 +93,22 @@ public class DocumentService {
                     .user(user)
                     .build();
 
-            return documentRepository.save(document);
+            Document saved = documentRepository.save(document);
+            Long savedId = saved.getId();
+
+            // Register async execution to run strictly AFTER the database transaction commits
+            if (TransactionSynchronizationManager.isActualTransactionActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        documentProcessingService.processDocumentAsync(savedId);
+                    }
+                });
+            } else {
+                documentProcessingService.processDocumentAsync(savedId);
+            }
+
+            return saved;
         } catch (IOException e) {
             if (storagePath != null) {
                 fileStorageService.deleteFile(storagePath);
@@ -109,7 +129,7 @@ public class DocumentService {
     }
 
     @Transactional(readOnly = true)
-    public String extractDocumentText(Long documentId, User user) {
+    public Document getDocumentByIdAndUser(Long documentId, User user) {
         Document document = documentRepository.findById(documentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Document not found with id: " + documentId));
 
@@ -121,6 +141,12 @@ public class DocumentService {
             throw new UnauthorizedAccessException("User is not authorized to access this document");
         }
 
+        return document;
+    }
+
+    @Transactional(readOnly = true)
+    public String extractDocumentText(Long documentId, User user) {
+        Document document = getDocumentByIdAndUser(documentId, user);
         Path filePath = fileStorageService.getRootLocation().resolve(document.getStoragePath()).normalize();
         String rawText = textExtractionService.extractTextFromFile(filePath);
         return textCleaningService.cleanText(rawText);

@@ -53,10 +53,20 @@ public class DocumentController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<DocumentResponse> getDocumentById(@PathVariable Long id) {
-        return documentService.getDocumentById(id)
-                .map(doc -> ResponseEntity.ok(mapToResponse(doc)))
-                .orElse(ResponseEntity.notFound().build());
+    public ResponseEntity<DocumentResponse> getDocumentById(
+            @PathVariable Long id,
+            Authentication authentication) {
+
+        if (authentication == null || authentication.getName() == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        User user = userService.getUserByUsername(authentication.getName())
+                .or(() -> userService.getUserByEmail(authentication.getName()))
+                .orElseThrow(() -> new ResourceNotFoundException("Authenticated user not found"));
+
+        Document doc = documentService.getDocumentByIdAndUser(id, user);
+        return ResponseEntity.ok(mapToResponse(doc));
     }
 
     @GetMapping("/{id}/text")

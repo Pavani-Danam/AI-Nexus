@@ -1,121 +1,98 @@
 package com.ainexus.service;
 
+import com.ainexus.dto.TextChunk;
 import com.ainexus.entity.Document;
-import com.ainexus.entity.DocumentChunk;
 import com.ainexus.entity.DocumentStatus;
-import com.ainexus.entity.ProcessingJob;
-import com.ainexus.repository.DocumentChunkRepository;
 import com.ainexus.repository.DocumentRepository;
-import com.ainexus.repository.ProcessingJobRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.file.Path;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.Optional;
 
 @Service
 public class DocumentProcessingService {
 
     private static final Logger logger = LoggerFactory.getLogger(DocumentProcessingService.class);
 
-    private final DocumentParserService documentParserService;
-    private final TextChunkerService textChunkerService;
-    private final EmbeddingService embeddingService;
-    private final FileStorageService fileStorageService;
     private final DocumentRepository documentRepository;
-    private final DocumentChunkRepository documentChunkRepository;
-    private final ProcessingJobRepository processingJobRepository;
+    private final FileStorageService fileStorageService;
+    private final DocumentTextExtractionService textExtractionService;
+    private final DocumentTextCleaningService textCleaningService;
+    private final DocumentTextChunkingService textChunkingService;
 
-    public DocumentProcessingService(DocumentParserService documentParserService,
-                                     TextChunkerService textChunkerService,
-                                     EmbeddingService embeddingService,
+    public DocumentProcessingService(DocumentRepository documentRepository,
                                      FileStorageService fileStorageService,
-                                     DocumentRepository documentRepository,
-                                     DocumentChunkRepository documentChunkRepository,
-                                     ProcessingJobRepository processingJobRepository) {
-        this.documentParserService = documentParserService;
-        this.textChunkerService = textChunkerService;
-        this.embeddingService = embeddingService;
-        this.fileStorageService = fileStorageService;
+                                     DocumentTextExtractionService textExtractionService,
+                                     DocumentTextCleaningService textCleaningService,
+                                     DocumentTextChunkingService textChunkingService) {
         this.documentRepository = documentRepository;
-        this.documentChunkRepository = documentChunkRepository;
-        this.processingJobRepository = processingJobRepository;
+        this.fileStorageService = fileStorageService;
+        this.textExtractionService = textExtractionService;
+        this.textCleaningService = textCleaningService;
+        this.textChunkingService = textChunkingService;
     }
 
     @Async("documentProcessingExecutor")
-    @Transactional
-    public void processDocumentAsync(Long documentId, Long jobId) {
-        logger.info("Starting async document processing & embedding generation for documentId={}, jobId={}", documentId, jobId);
+    public void processDocumentAsync(Long documentId) {
+        logger.info("Starting asynchronous processing for document id: {}", documentId);
 
-        Document document = documentRepository.findById(documentId).orElse(null);
-        ProcessingJob job = processingJobRepository.findById(jobId).orElse(null);
-
-        if (document == null || job == null) {
-            logger.error("Document or Job not found. documentId={}, jobId={}", documentId, jobId);
+        Optional<Document> documentOpt = documentRepository.findById(documentId);
+        if (documentOpt.isEmpty()) {
+            logger.error("Document with id {} not found for asynchronous processing", documentId);
             return;
         }
 
-        try {
-            job.setStatus("PROCESSING");
-            processingJobRepository.save(job);
+        Document document = documentOpt.get();
 
-            document.setStatus(DocumentStatus.PROCESSING);
-            documentRepository.save(document);
-
-            // 1. Resolve path and extract text
-            Path fullFilePath = fileStorageService.getRootLocation().resolve(document.getStoragePath()).normalize();
-            String extractedText = documentParserService.extractText(fullFilePath);
-
-            if (extractedText == null || extractedText.trim().isEmpty()) {
-                throw new IllegalStateException("No text content could be extracted from file: " + document.getFileName());
-            }
-
-            // 2. Chunking
-            List<TextChunkerService.ChunkResult> chunkResults = textChunkerService.chunkText(extractedText);
-
-            documentChunkRepository.deleteByDocument(document);
-
-            // 3. Vector Embeddings Generation
-            List<DocumentChunk> chunks = chunkResults.stream()
-                    .map(cr -> {
-                        List<Double> vector = embeddingService.generateEmbedding(cr.content());
-                        String serializedVec = embeddingService.serializeEmbedding(vector);
-
-                        return DocumentChunk.builder()
-                                .document(document)
-                                .chunkIndex(cr.index())
-                                .content(cr.content())
-                                .tokenCount(cr.tokenCount())
-                                .embedding(serializedVec)
-                                .build();
-                    })
-                    .collect(Collectors.toList());
-
-            documentChunkRepository.saveAll(chunks);
-
-            // 4. Mark completed / indexed
-            document.setStatus(DocumentStatus.INDEXED);
-            documentRepository.save(document);
-
-            job.setStatus("COMPLETED");
-            job.setErrorMessage(null);
-            processingJobRepository.save(job);
-
-            logger.info("Successfully processed and vectorized documentId={} with {} chunks generated", documentId, chunks.size());
-
-        } catch (Exception ex) {
-            logger.error("Error processing documentId={}: {}", documentId, ex.getMessage(), ex);
-
-            document.setStatus(DocumentStatus.FAILED);
-            documentRepository.save(document);
-
-            job.setStatus("FAILED");
-            job.setErrorMessage(ex.getMessage());
-            processingJobRepository.save(job);
+        // Prevent duplicate simultaneous processing
+        if (document.getStatus() == DocumentStatus.PROCESSING) {
+            logger.warn("Document id {} is already in PROCESSING state. Skipping duplicate trigger.", documentId);
+            return;
         }
+
+        // Update state to PROCESSING in a fresh transaction
+        updateStatus(documentId, DocumentStatus.PROCESSING);
+
+        try {
+            // 1. Resolve stored file
+            Path filePath = fileStorageService.getRootLocation().resolve(document.getStoragePath()).normalize();
+
+            // 2. Text Extraction
+            logger.debug("Extracting text for document id: {}", documentId);
+            String rawText = textExtractionService.extractTextFromFile(filePath);
+            logger.debug("Extraction completed for document id: {} (raw character count: {})", documentId, rawText.length());
+
+            // 3. Text Cleaning & Normalization
+            logger.debug("Cleaning text for document id: {}", documentId);
+            String cleanedText = textCleaningService.cleanText(rawText);
+            logger.debug("Cleaning completed for document id: {} (cleaned character count: {})", documentId, cleanedText.length());
+
+            // 4. Text Chunking
+            logger.debug("Chunking text for document id: {}", documentId);
+            List<TextChunk> chunks = textChunkingService.chunkText(cleanedText);
+            logger.info("Chunking completed for document id: {}. Generated {} chunks.", documentId, chunks.size());
+
+            // 5. Update state to INDEXED
+            updateStatus(documentId, DocumentStatus.INDEXED);
+            logger.info("Document id {} successfully processed and marked as INDEXED", documentId);
+
+        } catch (Exception e) {
+            logger.error("Document processing failed for document id: {}. Reason: {}", documentId, e.getMessage(), e);
+            updateStatus(documentId, DocumentStatus.FAILED);
+        }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void updateStatus(Long documentId, DocumentStatus status) {
+        documentRepository.findById(documentId).ifPresent(doc -> {
+            doc.setStatus(status);
+            documentRepository.saveAndFlush(doc);
+        });
     }
 }
