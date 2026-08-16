@@ -18,7 +18,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
@@ -26,42 +25,32 @@ import java.util.Optional;
 @Transactional
 public class DocumentService {
 
-    private static final List<String> ALLOWED_EXTENSIONS = Arrays.asList(".pdf", ".docx", ".txt");
-
     private final DocumentRepository documentRepository;
     private final FileStorageService fileStorageService;
+    private final FileValidationService fileValidationService;
     private final WorkspaceRepository workspaceRepository;
     private final WorkspaceMemberRepository workspaceMemberRepository;
     private final UserRepository userRepository;
 
     public DocumentService(DocumentRepository documentRepository,
                            FileStorageService fileStorageService,
+                           FileValidationService fileValidationService,
                            WorkspaceRepository workspaceRepository,
                            WorkspaceMemberRepository workspaceMemberRepository,
                            UserRepository userRepository) {
         this.documentRepository = documentRepository;
         this.fileStorageService = fileStorageService;
+        this.fileValidationService = fileValidationService;
         this.workspaceRepository = workspaceRepository;
         this.workspaceMemberRepository = workspaceMemberRepository;
         this.userRepository = userRepository;
     }
 
     public Document uploadDocument(MultipartFile file, Long workspaceId, User user) {
-        if (file == null || file.isEmpty()) {
-            throw new IllegalArgumentException("File cannot be empty or missing");
-        }
+        // 1. Authoritative Content & Extension Validation (Apache Tika)
+        FileValidationService.ValidatedFileInfo fileInfo = fileValidationService.validateFile(file);
 
-        String originalFilename = file.getOriginalFilename();
-        if (originalFilename == null || originalFilename.trim().isEmpty()) {
-            throw new IllegalArgumentException("Original filename cannot be empty");
-        }
-
-        String lowerFilename = originalFilename.toLowerCase();
-        boolean isValidExtension = ALLOWED_EXTENSIONS.stream().anyMatch(lowerFilename::endsWith);
-        if (!isValidExtension) {
-            throw new IllegalArgumentException("Unsupported file type. Allowed formats: .pdf, .docx, .txt");
-        }
-
+        // 2. User & Workspace Verification
         if (user == null || user.getId() == null) {
             throw new ResourceNotFoundException("Authenticated user not found");
         }
@@ -69,7 +58,7 @@ public class DocumentService {
         Workspace workspace = workspaceRepository.findById(workspaceId)
                 .orElseThrow(() -> new ResourceNotFoundException("Workspace not found with id: " + workspaceId));
 
-        // Workspace Authorization Check: Must be Owner or Member
+        // 3. Workspace Authorization (Owner or Member)
         boolean isOwner = workspace.getOwner() != null && workspace.getOwner().getId().equals(user.getId());
         boolean isMember = workspaceMemberRepository.findByWorkspaceAndUser(workspace, user).isPresent();
 
@@ -77,13 +66,14 @@ public class DocumentService {
             throw new UnauthorizedAccessException("User is not authorized to upload to this workspace");
         }
 
+        // 4. Physical Storage & Record Creation with Failure Cleanup
         String storagePath = null;
         try {
-            storagePath = fileStorageService.storeFile(file.getInputStream(), originalFilename, workspaceId);
+            storagePath = fileStorageService.storeFile(file.getInputStream(), fileInfo.safeFilename(), workspaceId);
 
             Document document = Document.builder()
-                    .fileName(originalFilename)
-                    .fileType(file.getContentType())
+                    .fileName(fileInfo.safeFilename())
+                    .fileType(fileInfo.detectedMimeType())
                     .fileSize(file.getSize())
                     .storagePath(storagePath)
                     .status(DocumentStatus.UPLOADED)
