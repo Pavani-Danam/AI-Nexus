@@ -1,6 +1,7 @@
 package com.ainexus.dto;
 
 import lombok.*;
+
 import java.time.LocalDateTime;
 
 @Data
@@ -14,5 +15,7 @@ public class DocumentResponse {
     private Long fileSize;
     private String status;
     private Long userId;
+    private Long workspaceId;
     private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
 }

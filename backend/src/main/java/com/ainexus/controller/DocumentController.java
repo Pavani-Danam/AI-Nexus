@@ -1,21 +1,26 @@
 package com.ainexus.controller;
 
-import com.ainexus.dto.DocumentRequest;
 import com.ainexus.dto.DocumentResponse;
 import com.ainexus.entity.Document;
 import com.ainexus.entity.DocumentStatus;
 import com.ainexus.entity.User;
+import com.ainexus.exception.ResourceNotFoundException;
 import com.ainexus.service.DocumentService;
 import com.ainexus.service.UserService;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.stream.Collectors;
 
 @RestController
-@RequestMapping("/api/documents")
+@RequestMapping({"/api/v1/documents", "/api/documents"})
 public class DocumentController {
 
     private final DocumentService documentService;
@@ -26,22 +31,21 @@ public class DocumentController {
         this.userService = userService;
     }
 
-    @PostMapping
-    public ResponseEntity<DocumentResponse> createDocument(@RequestBody DocumentRequest request) {
-        User user = userService.getUserById(request.getUserId())
-                .orElseThrow(() -> new IllegalArgumentException("User not found with id: " + request.getUserId()));
+    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<DocumentResponse> uploadDocument(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("workspaceId") Long workspaceId,
+            Authentication authentication) {
 
-        Document document = Document.builder()
-                .fileName(request.getFileName())
-                .originalFilename(request.getFileName())
-                .fileType(request.getFileType())
-                .fileSize(request.getFileSize())
-                .storagePath(request.getStoragePath())
-                .status(DocumentStatus.UPLOADED)
-                .user(user)
-                .build();
+        if (authentication == null || authentication.getName() == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
 
-        Document saved = documentService.saveDocument(document);
+        User user = userService.getUserByUsername(authentication.getName())
+                .or(() -> userService.getUserByEmail(authentication.getName()))
+                .orElseThrow(() -> new ResourceNotFoundException("Authenticated user not found"));
+
+        Document saved = documentService.uploadDocument(file, workspaceId, user);
         return ResponseEntity.status(HttpStatus.CREATED).body(mapToResponse(saved));
     }
 
@@ -52,10 +56,19 @@ public class DocumentController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
+    @GetMapping("/workspace/{workspaceId}")
+    public ResponseEntity<Page<DocumentResponse>> getDocumentsByWorkspace(
+            @PathVariable Long workspaceId,
+            Pageable pageable) {
+        Page<DocumentResponse> page = documentService.getDocumentsByWorkspace(workspaceId, pageable)
+                .map(this::mapToResponse);
+        return ResponseEntity.ok(page);
+    }
+
     @GetMapping("/user/{userId}")
     public ResponseEntity<List<DocumentResponse>> getDocumentsByUser(@PathVariable Long userId) {
         User user = userService.getUserById(userId)
-                .orElseThrow(() -> new IllegalArgumentException("User not found with id: " + userId));
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + userId));
 
         List<DocumentResponse> response = documentService.getDocumentsByUser(user)
                 .stream()
@@ -81,14 +94,16 @@ public class DocumentController {
     }
 
     private DocumentResponse mapToResponse(Document document) {
-        return new DocumentResponse(
-                document.getId(),
-                document.getFileName(),
-                document.getFileType(),
-                document.getFileSize(),
-                document.getStatus() != null ? document.getStatus().name() : null,
-                document.getUser() != null ? document.getUser().getId() : null,
-                document.getCreatedAt()
-        );
+        return DocumentResponse.builder()
+                .id(document.getId())
+                .fileName(document.getFileName())
+                .fileType(document.getFileType())
+                .fileSize(document.getFileSize())
+                .status(document.getStatus() != null ? document.getStatus().name() : null)
+                .userId(document.getUser() != null ? document.getUser().getId() : null)
+                .workspaceId(document.getWorkspace() != null ? document.getWorkspace().getId() : null)
+                .createdAt(document.getCreatedAt())
+                .updatedAt(document.getUpdatedAt())
+                .build();
     }
 }
