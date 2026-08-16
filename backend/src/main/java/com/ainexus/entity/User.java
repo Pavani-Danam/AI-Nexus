@@ -9,16 +9,18 @@ import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "users")
-@Getter
-@Setter
+@Data
+@Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
 public class User {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
+    @Column(length = 100)
+    private String name;
 
     @Column(nullable = false, unique = true, length = 50)
     private String username;
@@ -31,10 +33,11 @@ public class User {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
-    private Role role;
-
-    @Column(nullable = false)
     @Builder.Default
+    private Role role = Role.ROLE_USER;
+
+    @Builder.Default
+    @Column(nullable = false)
     private boolean enabled = true;
 
     @CreationTimestamp
