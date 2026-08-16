@@ -1,15 +1,14 @@
 package com.ainexus.controller;
 
-import com.ainexus.dto.AuthResponse;
-import com.ainexus.dto.LoginRequest;
-import com.ainexus.dto.LoginResponse;
-import com.ainexus.dto.RegisterRequest;
+import com.ainexus.dto.*;
 import com.ainexus.service.AuthService;
 import com.ainexus.service.UserService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -33,5 +32,17 @@ public class AuthController {
     public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
         LoginResponse response = authService.login(request);
         return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<LoginResponse> refresh(@Valid @RequestBody RefreshTokenRequest request) {
+        LoginResponse response = authService.refreshToken(request);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<Map<String, String>> logout(@Valid @RequestBody LogoutRequest request) {
+        authService.logout(request);
+        return ResponseEntity.ok(Map.of("message", "Logged out successfully"));
     }
 }

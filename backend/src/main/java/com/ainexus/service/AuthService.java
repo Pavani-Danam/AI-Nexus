@@ -3,6 +3,9 @@ package com.ainexus.service;
 import com.ainexus.dto.AuthResponse;
 import com.ainexus.dto.LoginRequest;
 import com.ainexus.dto.LoginResponse;
+import com.ainexus.dto.LogoutRequest;
+import com.ainexus.dto.RefreshTokenRequest;
+import com.ainexus.entity.RefreshToken;
 import com.ainexus.entity.User;
 import com.ainexus.repository.UserRepository;
 import com.ainexus.security.JwtService;
@@ -12,17 +15,24 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
-@Transactional(readOnly = true)
+@Transactional
 public class AuthService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+    private final RefreshTokenService refreshTokenService;
 
-    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtService jwtService) {
+    public AuthService(
+            UserRepository userRepository,
+            PasswordEncoder passwordEncoder,
+            JwtService jwtService,
+            RefreshTokenService refreshTokenService
+    ) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
+        this.refreshTokenService = refreshTokenService;
     }
 
     public LoginResponse login(LoginRequest request) {
@@ -37,7 +47,8 @@ public class AuthService {
             throw new BadCredentialsException("User account is disabled");
         }
 
-        String token = jwtService.generateToken(user.getEmail());
+        String accessToken = jwtService.generateToken(user.getEmail());
+        RefreshToken refreshToken = refreshTokenService.createRefreshToken(user.getEmail());
 
         AuthResponse authUser = AuthResponse.builder()
                 .id(user.getId())
@@ -46,10 +57,38 @@ public class AuthService {
                 .build();
 
         return LoginResponse.builder()
-                .accessToken(token)
+                .accessToken(accessToken)
+                .refreshToken(refreshToken.getToken())
                 .tokenType("Bearer")
                 .expiresIn(jwtService.getExpirationSeconds())
                 .user(authUser)
                 .build();
+    }
+
+    public LoginResponse refreshToken(RefreshTokenRequest request) {
+        RefreshToken token = refreshTokenService.findByToken(request.getRefreshToken());
+        refreshTokenService.verifyExpirationAndRevocation(token);
+
+        User user = token.getUser();
+        String newAccessToken = jwtService.generateToken(user.getEmail());
+        RefreshToken rotatedRefreshToken = refreshTokenService.createRefreshToken(user.getEmail());
+
+        AuthResponse authUser = AuthResponse.builder()
+                .id(user.getId())
+                .name(user.getName())
+                .email(user.getEmail())
+                .build();
+
+        return LoginResponse.builder()
+                .accessToken(newAccessToken)
+                .refreshToken(rotatedRefreshToken.getToken())
+                .tokenType("Bearer")
+                .expiresIn(jwtService.getExpirationSeconds())
+                .user(authUser)
+                .build();
+    }
+
+    public void logout(LogoutRequest request) {
+        refreshTokenService.revokeToken(request.getRefreshToken());
     }
 }
