@@ -30,6 +30,7 @@ public class DocumentService {
     private final FileStorageService fileStorageService;
     private final FileValidationService fileValidationService;
     private final DocumentTextExtractionService textExtractionService;
+    private final DocumentTextCleaningService textCleaningService;
     private final WorkspaceRepository workspaceRepository;
     private final WorkspaceMemberRepository workspaceMemberRepository;
     private final UserRepository userRepository;
@@ -38,6 +39,7 @@ public class DocumentService {
                            FileStorageService fileStorageService,
                            FileValidationService fileValidationService,
                            DocumentTextExtractionService textExtractionService,
+                           DocumentTextCleaningService textCleaningService,
                            WorkspaceRepository workspaceRepository,
                            WorkspaceMemberRepository workspaceMemberRepository,
                            UserRepository userRepository) {
@@ -45,6 +47,7 @@ public class DocumentService {
         this.fileStorageService = fileStorageService;
         this.fileValidationService = fileValidationService;
         this.textExtractionService = textExtractionService;
+        this.textCleaningService = textCleaningService;
         this.workspaceRepository = workspaceRepository;
         this.workspaceMemberRepository = workspaceMemberRepository;
         this.userRepository = userRepository;
@@ -115,7 +118,8 @@ public class DocumentService {
         }
 
         Path filePath = fileStorageService.getRootLocation().resolve(document.getStoragePath()).normalize();
-        return textExtractionService.extractTextFromFile(filePath);
+        String rawText = textExtractionService.extractTextFromFile(filePath);
+        return textCleaningService.cleanText(rawText);
     }
 
     @Transactional(readOnly = true)
