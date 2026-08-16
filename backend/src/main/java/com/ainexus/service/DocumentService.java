@@ -18,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 
@@ -28,6 +29,7 @@ public class DocumentService {
     private final DocumentRepository documentRepository;
     private final FileStorageService fileStorageService;
     private final FileValidationService fileValidationService;
+    private final DocumentTextExtractionService textExtractionService;
     private final WorkspaceRepository workspaceRepository;
     private final WorkspaceMemberRepository workspaceMemberRepository;
     private final UserRepository userRepository;
@@ -35,22 +37,22 @@ public class DocumentService {
     public DocumentService(DocumentRepository documentRepository,
                            FileStorageService fileStorageService,
                            FileValidationService fileValidationService,
+                           DocumentTextExtractionService textExtractionService,
                            WorkspaceRepository workspaceRepository,
                            WorkspaceMemberRepository workspaceMemberRepository,
                            UserRepository userRepository) {
         this.documentRepository = documentRepository;
         this.fileStorageService = fileStorageService;
         this.fileValidationService = fileValidationService;
+        this.textExtractionService = textExtractionService;
         this.workspaceRepository = workspaceRepository;
         this.workspaceMemberRepository = workspaceMemberRepository;
         this.userRepository = userRepository;
     }
 
     public Document uploadDocument(MultipartFile file, Long workspaceId, User user) {
-        // 1. Authoritative Content & Extension Validation (Apache Tika)
         FileValidationService.ValidatedFileInfo fileInfo = fileValidationService.validateFile(file);
 
-        // 2. User & Workspace Verification
         if (user == null || user.getId() == null) {
             throw new ResourceNotFoundException("Authenticated user not found");
         }
@@ -58,7 +60,6 @@ public class DocumentService {
         Workspace workspace = workspaceRepository.findById(workspaceId)
                 .orElseThrow(() -> new ResourceNotFoundException("Workspace not found with id: " + workspaceId));
 
-        // 3. Workspace Authorization (Owner or Member)
         boolean isOwner = workspace.getOwner() != null && workspace.getOwner().getId().equals(user.getId());
         boolean isMember = workspaceMemberRepository.findByWorkspaceAndUser(workspace, user).isPresent();
 
@@ -66,7 +67,6 @@ public class DocumentService {
             throw new UnauthorizedAccessException("User is not authorized to upload to this workspace");
         }
 
-        // 4. Physical Storage & Record Creation with Failure Cleanup
         String storagePath = null;
         try {
             storagePath = fileStorageService.storeFile(file.getInputStream(), fileInfo.safeFilename(), workspaceId);
@@ -99,6 +99,23 @@ public class DocumentService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + userId));
         return uploadDocument(file, workspaceId, user);
+    }
+
+    @Transactional(readOnly = true)
+    public String extractDocumentText(Long documentId, User user) {
+        Document document = documentRepository.findById(documentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Document not found with id: " + documentId));
+
+        Workspace workspace = document.getWorkspace();
+        boolean isOwner = workspace.getOwner() != null && workspace.getOwner().getId().equals(user.getId());
+        boolean isMember = workspaceMemberRepository.findByWorkspaceAndUser(workspace, user).isPresent();
+
+        if (!isOwner && !isMember) {
+            throw new UnauthorizedAccessException("User is not authorized to access this document");
+        }
+
+        Path filePath = fileStorageService.getRootLocation().resolve(document.getStoragePath()).normalize();
+        return textExtractionService.extractTextFromFile(filePath);
     }
 
     @Transactional(readOnly = true)

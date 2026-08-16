@@ -2,14 +2,11 @@ package com.ainexus.controller;
 
 import com.ainexus.dto.DocumentResponse;
 import com.ainexus.entity.Document;
-import com.ainexus.entity.DocumentChunk;
 import com.ainexus.entity.DocumentStatus;
 import com.ainexus.entity.User;
 import com.ainexus.exception.ResourceNotFoundException;
-import com.ainexus.service.DocumentChunkService;
 import com.ainexus.service.DocumentService;
 import com.ainexus.service.UserService;
-import com.ainexus.service.VectorSearchService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
@@ -20,6 +17,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @RestController
@@ -27,17 +25,11 @@ import java.util.stream.Collectors;
 public class DocumentController {
 
     private final DocumentService documentService;
-    private final DocumentChunkService documentChunkService;
-    private final VectorSearchService vectorSearchService;
     private final UserService userService;
 
     public DocumentController(DocumentService documentService,
-                              DocumentChunkService documentChunkService,
-                              VectorSearchService vectorSearchService,
                               UserService userService) {
         this.documentService = documentService;
-        this.documentChunkService = documentChunkService;
-        this.vectorSearchService = vectorSearchService;
         this.userService = userService;
     }
 
@@ -66,34 +58,25 @@ public class DocumentController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    @GetMapping("/{id}/chunks")
-    public ResponseEntity<List<DocumentChunkResponse>> getDocumentChunks(@PathVariable Long id) {
-        Document document = documentService.getDocumentById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Document not found with id: " + id));
+    @GetMapping("/{id}/text")
+    public ResponseEntity<Map<String, Object>> getDocumentExtractedText(
+            @PathVariable Long id,
+            Authentication authentication) {
 
-        List<DocumentChunk> chunks = documentChunkService.getChunksByDocumentId(document.getId());
-        List<DocumentChunkResponse> responses = chunks.stream()
-                .map(c -> new DocumentChunkResponse(
-                        c.getId(),
-                        c.getChunkIndex(),
-                        c.getContent(),
-                        c.getTokenCount(),
-                        c.getEmbedding() != null && !c.getEmbedding().isEmpty(),
-                        c.getCreatedAt()))
-                .collect(Collectors.toList());
+        if (authentication == null || authentication.getName() == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
 
-        return ResponseEntity.ok(responses);
-    }
+        User user = userService.getUserByUsername(authentication.getName())
+                .or(() -> userService.getUserByEmail(authentication.getName()))
+                .orElseThrow(() -> new ResourceNotFoundException("Authenticated user not found"));
 
-    @GetMapping("/search")
-    public ResponseEntity<List<VectorSearchService.SearchResult>> searchSimilarChunks(
-            @RequestParam("workspaceId") Long workspaceId,
-            @RequestParam("query") String query,
-            @RequestParam(value = "topK", defaultValue = "5") int topK,
-            @RequestParam(value = "minScore", defaultValue = "0.0") double minScore) {
-
-        List<VectorSearchService.SearchResult> results = vectorSearchService.searchSimilarChunks(workspaceId, query, topK, minScore);
-        return ResponseEntity.ok(results);
+        String text = documentService.extractDocumentText(id, user);
+        return ResponseEntity.ok(Map.of(
+                "documentId", id,
+                "extractedText", text,
+                "characterCount", text.length()
+        ));
     }
 
     @GetMapping("/workspace/{workspaceId}")
@@ -146,13 +129,4 @@ public class DocumentController {
                 .updatedAt(document.getUpdatedAt())
                 .build();
     }
-
-    public record DocumentChunkResponse(
-            Long id,
-            Integer chunkIndex,
-            String content,
-            Integer tokenCount,
-            Boolean hasEmbedding,
-            java.time.LocalDateTime createdAt
-    ) {}
 }
