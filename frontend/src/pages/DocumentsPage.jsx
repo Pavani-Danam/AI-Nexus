@@ -1,20 +1,71 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { DocumentTable } from '../components/documents/DocumentTable';
 import DocumentUploadModal from '../components/documents/DocumentUploadModal';
+import { documentService } from '../services/documentService';
+import api from '../services/api';
 
 export default function DocumentsPage() {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFilter, setSelectedFilter] = useState('ALL');
+  const [documents, setDocuments] = useState([]);
+  const [workspaceId, setWorkspaceId] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  // Prepared for API data integration in Step 23
-  const [documents] = useState([]);
+  // Fetch workspace and documents on load
+  const loadDocuments = useCallback(async () => {
+    try {
+      const userRes = await api.get('/auth/me').catch(() => null);
+      const userId = userRes?.data?.id;
+      if (!userId) return;
+
+      const wsRes = await api.get(`/workspaces?ownerId=${userId}`);
+      const workspaces = wsRes.data;
+      if (workspaces && workspaces.length > 0) {
+        const activeWsId = workspaces[0].id;
+        setWorkspaceId(activeWsId);
+
+        const docs = await documentService.getDocumentsByWorkspace(activeWsId);
+        setDocuments(docs);
+      }
+    } catch (err) {
+      console.error('Failed to load documents:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadDocuments();
+  }, [loadDocuments]);
+
+  // Polling mechanism to check processing status for non-terminal documents
+  useEffect(() => {
+    const hasUnfinished = documents.some(
+      (doc) => doc.status === 'UPLOADED' || doc.status === 'PROCESSING'
+    );
+    if (!hasUnfinished) return;
+
+    const interval = setInterval(async () => {
+      if (!workspaceId) return;
+      try {
+        const docs = await documentService.getDocumentsByWorkspace(workspaceId);
+        setDocuments(docs);
+      } catch (err) {
+        console.error('Polling error:', err);
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [documents, workspaceId]);
 
   // Client-side search and filtering logic
   const filteredDocuments = useMemo(() => {
     return documents.filter((doc) => {
-      const matchesSearch = doc.name?.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesFilter = selectedFilter === 'ALL' || doc.type?.toUpperCase() === selectedFilter;
+      const name = doc.fileName || doc.name || '';
+      const type = doc.fileType || doc.type || '';
+      const matchesSearch = name.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesFilter = selectedFilter === 'ALL' || type.toUpperCase().includes(selectedFilter);
       return matchesSearch && matchesFilter;
     });
   }, [documents, searchQuery, selectedFilter]);
@@ -83,6 +134,7 @@ export default function DocumentsPage() {
       {/* Document List / Empty State */}
       <DocumentTable
         documents={filteredDocuments}
+        loading={loading}
         onOpenUpload={() => setIsUploadOpen(true)}
       />
 
@@ -90,6 +142,8 @@ export default function DocumentsPage() {
       <DocumentUploadModal
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
+        workspaceId={workspaceId}
+        onUploadSuccess={loadDocuments}
       />
     </div>
   );

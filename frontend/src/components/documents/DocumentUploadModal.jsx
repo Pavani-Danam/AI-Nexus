@@ -1,22 +1,21 @@
 import React, { useState, useRef } from 'react';
 import { FormButton } from '../ui/FormControls';
+import { documentService } from '../../services/documentService';
 
 const ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.txt'];
 const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
 
-export default function DocumentUploadModal({ isOpen, onClose }) {
+export default function DocumentUploadModal({ isOpen, onClose, workspaceId, onUploadSuccess }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [dragActive, setDragActive] = useState(false);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
 
   if (!isOpen) return null;
 
   const validateAndSetFile = (file) => {
     setError('');
-    setNotice('');
-
     if (!file) return;
 
     if (file.size === 0) {
@@ -74,38 +73,58 @@ export default function DocumentUploadModal({ isOpen, onClose }) {
   };
 
   const getFileTypeLabel = (name) => {
-    const ext = name.split('.').pop()?.toUpperCase() || 'FILE';
-    return ext;
+    return name.split('.').pop()?.toUpperCase() || 'FILE';
   };
 
   const handleRemoveFile = () => {
     setSelectedFile(null);
     setError('');
-    setNotice('');
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
 
-  const handleUploadSubmit = (e) => {
+  const handleUploadSubmit = async (e) => {
     e.preventDefault();
     if (!selectedFile) {
       setError('Please select a file to upload.');
       return;
     }
 
-    // Modal UI ready for backend ingestion in upcoming steps
-    setNotice('Upload UI validated. Multipart ingestion will connect to the backend in Step 23.');
-    setTimeout(() => {
+    if (!workspaceId) {
+      setError('No active workspace selected.');
+      return;
+    }
+
+    setUploading(true);
+    setError('');
+
+    try {
+      await documentService.uploadDocument(selectedFile, workspaceId);
+      if (onUploadSuccess) {
+        onUploadSuccess();
+      }
       handleRemoveFile();
       onClose();
-    }, 1400);
+    } catch (err) {
+      const status = err.response?.status;
+      if (status === 401) {
+        setError('Session expired. Please log in again.');
+      } else if (status === 403) {
+        setError('You do not have permission to upload to this workspace.');
+      } else if (status === 413) {
+        setError('The file is too large.');
+      } else {
+        setError(err.response?.data?.message || 'Failed to upload document. Please try again.');
+      }
+    } finally {
+      setUploading(false);
+    }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
       <div className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-6 space-y-5">
-        {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
           <div>
             <h3 className="text-base font-semibold text-slate-100">Upload documents</h3>
@@ -114,20 +133,12 @@ export default function DocumentUploadModal({ isOpen, onClose }) {
           <button
             type="button"
             onClick={onClose}
-            className="text-slate-400 hover:text-slate-200 text-lg leading-none"
+            className="text-slate-400 hover:text-slate-200 text-lg leading-none cursor-pointer"
           >
             &times;
           </button>
         </div>
 
-        {/* Notice Banner */}
-        {notice && (
-          <div className="p-3 bg-indigo-500/15 border border-indigo-500/30 rounded-xl text-xs text-indigo-300">
-            {notice}
-          </div>
-        )}
-
-        {/* Error Banner */}
         {error && (
           <div className="p-3 bg-rose-500/15 border border-rose-500/30 rounded-xl text-xs text-rose-300">
             {error}
@@ -135,7 +146,6 @@ export default function DocumentUploadModal({ isOpen, onClose }) {
         )}
 
         <form onSubmit={handleUploadSubmit} className="space-y-4">
-          {/* Drag & Drop Area */}
           {!selectedFile ? (
             <div
               onDragEnter={handleDrag}
@@ -169,7 +179,6 @@ export default function DocumentUploadModal({ isOpen, onClose }) {
               </p>
             </div>
           ) : (
-            /* Selected File Preview */
             <div className="p-4 rounded-xl bg-slate-800/60 border border-slate-700/80 flex items-center justify-between">
               <div className="flex items-center gap-3 overflow-hidden">
                 <div className="px-2.5 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 font-bold text-xs">
@@ -191,7 +200,6 @@ export default function DocumentUploadModal({ isOpen, onClose }) {
             </div>
           )}
 
-          {/* Action Footer */}
           <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
             <button
               type="button"
@@ -199,13 +207,13 @@ export default function DocumentUploadModal({ isOpen, onClose }) {
                 handleRemoveFile();
                 onClose();
               }}
-              className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white rounded-xl hover:bg-slate-800 transition-all"
+              className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white rounded-xl hover:bg-slate-800 transition-all cursor-pointer"
             >
               Cancel
             </button>
             <div className="w-36">
-              <FormButton type="submit" disabled={!selectedFile}>
-                Upload
+              <FormButton type="submit" disabled={!selectedFile || uploading}>
+                {uploading ? 'Uploading...' : 'Upload'}
               </FormButton>
             </div>
           </div>
