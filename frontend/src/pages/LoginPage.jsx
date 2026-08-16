@@ -1,10 +1,14 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import authService from '../services/authService';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { FormInput, PasswordInput, FormButton, AlertBanner } from '../components/ui/FormControls';
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { login } = useAuth();
+
+  const from = location.state?.from?.pathname || '/dashboard';
 
   const [formData, setFormData] = useState({
     email: '',
@@ -51,16 +55,13 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      await authService.login({
+      await login({
         email: formData.email.trim(),
         password: formData.password
       });
 
-      // Clear password field
-      setFormData((prev) => ({ ...prev, password: '' }));
-
-      // Navigate to dashboard upon successful authentication
-      navigate('/dashboard');
+      // Navigate to destination or default to dashboard
+      navigate(from, { replace: true });
     } catch (err) {
       if (err.response) {
         if (err.response.status === 401) {
@@ -79,7 +80,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 px-4 py-12 transition-colors duration-200">
+    <div className="min-h-screen flex items-center justify-center bg-slate-950 px-4 py-12 transition-colors duration-200">
       <div className="w-full max-w-md space-y-6">
         {/* Branding & Header */}
         <div className="text-center">
@@ -88,16 +89,16 @@ export default function LoginPage() {
               AI
             </div>
           </Link>
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+          <h2 className="text-2xl font-bold text-white tracking-tight">
             Sign in to AI-Nexus
           </h2>
-          <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+          <p className="text-xs text-slate-400 mt-1">
             Access your enterprise workspaces and knowledge base
           </p>
         </div>
 
         {/* Form Card */}
-        <div className="p-8 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-5">
+        <div className="p-8 rounded-2xl bg-slate-900 border border-slate-800 shadow-sm space-y-5">
           <AlertBanner type="error" message={serverError} onClose={() => setServerError('')} />
 
           <form onSubmit={handleSubmit} className="space-y-4" noValidate>
@@ -135,9 +136,9 @@ export default function LoginPage() {
         </div>
 
         {/* Footer Link */}
-        <p className="text-center text-xs text-slate-600 dark:text-slate-400">
+        <p className="text-center text-xs text-slate-400">
           Don't have an account?{' '}
-          <Link to="/register" className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">
+          <Link to="/register" className="font-semibold text-indigo-400 hover:underline">
             Register
           </Link>
         </p>
