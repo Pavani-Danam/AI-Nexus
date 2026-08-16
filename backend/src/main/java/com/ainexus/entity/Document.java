@@ -23,6 +23,9 @@ public class Document {
     @Column(name = "file_name", nullable = false, length = 255)
     private String fileName;
 
+    @Column(name = "original_filename", length = 255)
+    private String originalFilename;
+
     @Column(name = "file_type", length = 50)
     private String fileType;
 
@@ -32,13 +35,18 @@ public class Document {
     @Column(name = "storage_path", nullable = false, length = 500)
     private String storagePath;
 
+    @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 50)
     @Builder.Default
-    private String status = "UPLOADED";
+    private DocumentStatus status = DocumentStatus.UPLOADED;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "workspace_id")
+    private Workspace workspace;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

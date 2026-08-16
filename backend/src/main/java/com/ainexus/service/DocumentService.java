@@ -1,6 +1,7 @@
 package com.ainexus.service;
 
 import com.ainexus.entity.Document;
+import com.ainexus.entity.DocumentStatus;
 import com.ainexus.entity.User;
 import com.ainexus.repository.DocumentRepository;
 import org.springframework.stereotype.Service;
@@ -40,11 +41,11 @@ public class DocumentService {
     }
 
     @Transactional(readOnly = true)
-    public List<Document> getDocumentsByStatus(String status) {
+    public List<Document> getDocumentsByStatus(DocumentStatus status) {
         return documentRepository.findByStatus(status);
     }
 
-    public Document updateDocumentStatus(Long id, String status) {
+    public Document updateDocumentStatus(Long id, DocumentStatus status) {
         return documentRepository.findById(id)
                 .map(doc -> {
                     doc.setStatus(status);
