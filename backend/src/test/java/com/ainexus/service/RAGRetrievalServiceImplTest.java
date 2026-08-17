@@ -3,7 +3,6 @@ package com.ainexus.service;
 import com.ainexus.dto.EnhancedQuery;
 import com.ainexus.dto.RAGChunk;
 import com.ainexus.dto.RAGContext;
-import com.ainexus.dto.SearchResponse;
 import com.ainexus.dto.SearchResultItem;
 import com.ainexus.entity.User;
 import com.ainexus.service.impl.ContextManagementServiceImpl;
@@ -27,10 +26,10 @@ import static org.mockito.Mockito.*;
 class RAGRetrievalServiceImplTest {
 
     @Mock
-    private SemanticSearchService semanticSearchService;
+    private QueryEnhancementService queryEnhancementService;
 
     @Mock
-    private QueryEnhancementService queryEnhancementService;
+    private MultiQueryRetrievalService multiQueryRetrievalService;
 
     private ContextManagementServiceImpl contextManagementService;
     private RAGRetrievalServiceImpl ragRetrievalService;
@@ -43,9 +42,9 @@ class RAGRetrievalServiceImplTest {
         ReflectionTestUtils.setField(contextManagementService, "maxContextCharacters", 8000);
 
         ragRetrievalService = new RAGRetrievalServiceImpl(
-                semanticSearchService,
                 contextManagementService,
-                queryEnhancementService
+                queryEnhancementService,
+                multiQueryRetrievalService
         );
         ReflectionTestUtils.setField(ragRetrievalService, "defaultTopK", 5);
 
@@ -55,16 +54,15 @@ class RAGRetrievalServiceImplTest {
     }
 
     @Test
-    @DisplayName("TEST 1: Valid retrieval uses enhanced query and returns assembled context")
+    @DisplayName("TEST 1: Valid retrieval uses enhanced query and multi-query retrieval")
     void testSuccessfulRetrieval() {
         when(queryEnhancementService.enhanceQuery("architecture"))
                 .thenReturn(EnhancedQuery.of("architecture", "software architecture and microservice design"));
 
         SearchResultItem item1 = new SearchResultItem(1L, "arch.pdf", 0, 0.88, "AI-Nexus uses vector retrieval.", 31, "application/pdf", "vec-1");
-        SearchResponse response = new SearchResponse("software architecture and microservice design", 1L, 1, List.of(item1));
 
-        when(semanticSearchService.search(eq("software architecture and microservice design"), eq(1L), eq(5), eq(testUser)))
-                .thenReturn(response);
+        when(multiQueryRetrievalService.retrieveMultiQueryResults(eq("software architecture and microservice design"), eq(1L), eq(5), eq(testUser)))
+                .thenReturn(List.of(item1));
 
         RAGContext context = ragRetrievalService.retrieveAndAssembleContext("architecture", 1L, null, testUser);
 
@@ -81,10 +79,8 @@ class RAGRetrievalServiceImplTest {
         when(queryEnhancementService.enhanceQuery("unknown"))
                 .thenReturn(EnhancedQuery.unchanged("unknown"));
 
-        SearchResponse response = new SearchResponse("unknown", 1L, 0, Collections.emptyList());
-
-        when(semanticSearchService.search(eq("unknown"), eq(1L), eq(5), eq(testUser)))
-                .thenReturn(response);
+        when(multiQueryRetrievalService.retrieveMultiQueryResults(eq("unknown"), eq(1L), eq(5), eq(testUser)))
+                .thenReturn(Collections.emptyList());
 
         RAGContext context = ragRetrievalService.retrieveAndAssembleContext("unknown", 1L, null, testUser);
 
