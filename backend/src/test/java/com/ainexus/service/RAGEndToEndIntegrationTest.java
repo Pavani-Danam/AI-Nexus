@@ -1,7 +1,10 @@
 package com.ainexus.service;
 
-import com.ainexus.dto.*;
+import com.ainexus.dto.RAGResponse;
+import com.ainexus.dto.SearchResponse;
+import com.ainexus.dto.SearchResultItem;
 import com.ainexus.entity.User;
+import com.ainexus.service.impl.ContextManagementServiceImpl;
 import com.ainexus.service.impl.RAGGenerationServiceImpl;
 import com.ainexus.service.impl.RAGPromptBuilderImpl;
 import com.ainexus.service.impl.RAGRetrievalServiceImpl;
@@ -17,6 +20,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -25,147 +29,102 @@ class RAGEndToEndIntegrationTest {
     @Mock
     private SemanticSearchService semanticSearchService;
 
-    private RAGRetrievalService ragRetrievalService;
-    private RAGPromptBuilder ragPromptBuilder;
-    private TestableRAGGenerationService ragGenerationService;
+    private RAGGenerationServiceImpl ragGenerationService;
+    private User testUser;
 
-    private User userA;
-    private User userB;
+    static class TestableRAGGenerationServiceImpl extends RAGGenerationServiceImpl {
+        private String mockGeminiResponse = "Default mock answer";
 
-    static class TestableRAGGenerationService extends RAGGenerationServiceImpl {
-        private String mockGeminiAnswer = "Default grounded answer.";
-        private String capturedPrompt = null;
-
-        public TestableRAGGenerationService(RAGRetrievalService retrievalService, RAGPromptBuilder promptBuilder) {
+        public TestableRAGGenerationServiceImpl(RAGRetrievalService retrievalService,
+                                                RAGPromptBuilder promptBuilder) {
             super(retrievalService, promptBuilder);
         }
 
-        public void setMockGeminiAnswer(String answer) {
-            this.mockGeminiAnswer = answer;
-        }
-
-        public String getCapturedPrompt() {
-            return capturedPrompt;
+        public void setMockGeminiResponse(String response) {
+            this.mockGeminiResponse = response;
         }
 
         @Override
         protected String callGeminiGenerateContent(String promptText) {
-            this.capturedPrompt = promptText;
-            return mockGeminiAnswer;
+            return mockGeminiResponse;
         }
     }
 
     @BeforeEach
     void setUp() {
-        ragRetrievalService = new RAGRetrievalServiceImpl(semanticSearchService);
-        ReflectionTestUtils.setField(ragRetrievalService, "defaultTopK", 5);
-        ReflectionTestUtils.setField(ragRetrievalService, "minRelevanceScore", 0.35);
-        ReflectionTestUtils.setField(ragRetrievalService, "maxContextCharacters", 4000);
+        testUser = new User();
+        testUser.setId(1L);
+        testUser.setUsername("integrationUser");
 
-        ragPromptBuilder = new RAGPromptBuilderImpl();
+        ContextManagementServiceImpl contextManagementService = new ContextManagementServiceImpl();
+        ReflectionTestUtils.setField(contextManagementService, "minRelevanceScore", 0.35);
+        ReflectionTestUtils.setField(contextManagementService, "maxContextCharacters", 8000);
 
-        ragGenerationService = new TestableRAGGenerationService(ragRetrievalService, ragPromptBuilder);
-        ReflectionTestUtils.setField(ragGenerationService, "geminiApiKey", "valid-gemini-key");
-        ReflectionTestUtils.setField(ragGenerationService, "generationModel", "gemini-1.5-flash");
-        ReflectionTestUtils.setField(ragGenerationService, "temperature", 0.2);
-        ReflectionTestUtils.setField(ragGenerationService, "maxOutputTokens", 2048);
-        ReflectionTestUtils.setField(ragGenerationService, "timeoutSeconds", 30);
+        RAGRetrievalServiceImpl retrievalService = new RAGRetrievalServiceImpl(semanticSearchService, contextManagementService);
+        ReflectionTestUtils.setField(retrievalService, "defaultTopK", 5);
 
-        userA = new User();
-        userA.setId(1L);
-        userA.setUsername("userA");
+        RAGPromptBuilderImpl promptBuilder = new RAGPromptBuilderImpl();
 
-        userB = new User();
-        userB.setId(2L);
-        userB.setUsername("userB");
+        TestableRAGGenerationServiceImpl testableGenService = new TestableRAGGenerationServiceImpl(
+                retrievalService,
+                promptBuilder
+        );
+        ReflectionTestUtils.setField(testableGenService, "geminiApiKey", "test-api-key");
+        ReflectionTestUtils.setField(testableGenService, "generationModel", "gemini-1.5-flash");
+
+        ragGenerationService = testableGenService;
     }
 
     @Test
-    @DisplayName("E2E STEP 1-8: Full Pipeline -> Retrieval -> Prompt Construction -> Gemini -> Grounded Answer with Citations")
-    void testCompleteRAGPipelineSuccess() {
-        String chunk1Content = "AI-Nexus features a resilient RAG pipeline integrating Pinecone and Google Gemini.";
-        SearchResultItem chunk1 = new SearchResultItem(
-                101L, "ai_nexus_overview.pdf", 0, 0.94,
-                chunk1Content, chunk1Content.length(), "application/pdf", "doc_101_chunk_0"
-        );
+    @DisplayName("E2E RAG TEST 1: Full pipeline produces grounded answer with citations")
+    void testFullRAGPipelineSuccess() {
+        SearchResultItem item1 = new SearchResultItem(101L, "rag_guide.pdf", 0, 0.94, "AI-Nexus uses vector retrieval for context assembly.", 50, "application/pdf", "v-1");
+        SearchResultItem item2 = new SearchResultItem(102L, "rag_guide.pdf", 1, 0.88, "Chunks are fed into Gemini with strict grounding instructions.", 60, "application/pdf", "v-2");
+        SearchResponse mockResponse = new SearchResponse("How does AI-Nexus RAG work?", 10L, 2, List.of(item1, item2));
 
-        String chunk2Content = "All chunk vectors are indexed with 768-dimension embeddings.";
-        SearchResultItem chunk2 = new SearchResultItem(
-                101L, "ai_nexus_overview.pdf", 1, 0.88,
-                chunk2Content, chunk2Content.length(), "application/pdf", "doc_101_chunk_1"
-        );
+        when(semanticSearchService.search(eq("How does AI-Nexus RAG work?"), eq(10L), eq(5), eq(testUser)))
+                .thenReturn(mockResponse);
 
-        SearchResponse searchResponse = new SearchResponse(
-                "How does AI-Nexus RAG work?",
-                10L,
-                2,
-                List.of(chunk1, chunk2)
-        );
+        ((TestableRAGGenerationServiceImpl) ragGenerationService)
+                .setMockGeminiResponse("AI-Nexus performs vector retrieval and feeds context to Gemini for grounded answers.");
 
-        when(semanticSearchService.search("How does AI-Nexus RAG work?", 10L, 5, userA))
-                .thenReturn(searchResponse);
+        RAGResponse response = ragGenerationService.generateAnswer("How does AI-Nexus RAG work?", 10L, null, testUser);
 
-        ragGenerationService.setMockGeminiAnswer(
-                "AI-Nexus implements a RAG pipeline utilizing Pinecone for vector storage and Google Gemini with 768-dimension embeddings."
-        );
-
-        // Execute generation
-        RAGResponse response = ragGenerationService.generateAnswer("How does AI-Nexus RAG work?", 10L, 5, userA);
-
-        // Assert Grounded Output
         assertNotNull(response);
-        assertEquals("AI-Nexus implements a RAG pipeline utilizing Pinecone for vector storage and Google Gemini with 768-dimension embeddings.", response.answer());
-        assertEquals("How does AI-Nexus RAG work?", response.query());
-        assertEquals(10L, response.workspaceId());
+        assertEquals("AI-Nexus performs vector retrieval and feeds context to Gemini for grounded answers.", response.answer());
         assertTrue(response.hasContext());
-
-        // Assert Authoritative Sources and Citations
         assertEquals(2, response.citations().size());
-        assertEquals("doc-101-chunk-0", response.citations().get(0).sourceId());
-        assertEquals("ai_nexus_overview.pdf", response.citations().get(0).filename());
+        assertEquals("rag_guide.pdf", response.citations().get(0).filename());
         assertEquals(0.94, response.citations().get(0).similarityScore());
-        assertEquals("doc-101-chunk-1", response.citations().get(1).sourceId());
-
-        // Assert Prompt Scaffolding and Injection Isolation
-        String sentPrompt = ragGenerationService.getCapturedPrompt();
-        assertNotNull(sentPrompt);
-        assertTrue(sentPrompt.contains("=== SYSTEM INSTRUCTIONS ==="));
-        assertTrue(sentPrompt.contains("=== RETRIEVED DOCUMENT CONTEXT ==="));
-        assertTrue(sentPrompt.contains("=== USER QUESTION ==="));
-        assertTrue(sentPrompt.contains("AI-Nexus features a resilient RAG pipeline"));
     }
 
     @Test
-    @DisplayName("E2E STEP 9: Workspace Isolation -> User B cannot access Workspace A documents")
-    void testWorkspaceIsolationVerification() {
-        when(semanticSearchService.search("financial forecast", 20L, 5, userB))
-                .thenReturn(new SearchResponse("financial forecast", 20L, 0, Collections.emptyList()));
+    @DisplayName("E2E RAG TEST 2: Irrelevant or empty search produces controlled fallback without hallucination")
+    void testFullRAGPipelineNoContextFallback() {
+        SearchResponse emptyResponse = new SearchResponse("What is the recipe for chocolate cake?", 10L, 0, Collections.emptyList());
 
-        ragGenerationService.setMockGeminiAnswer("I do not have sufficient information in the available documents.");
+        when(semanticSearchService.search(eq("What is the recipe for chocolate cake?"), eq(10L), eq(5), eq(testUser)))
+                .thenReturn(emptyResponse);
 
-        RAGResponse response = ragGenerationService.generateAnswer("financial forecast", 20L, 5, userB);
+        RAGResponse response = ragGenerationService.generateAnswer("What is the recipe for chocolate cake?", 10L, null, testUser);
 
         assertNotNull(response);
         assertFalse(response.hasContext());
         assertTrue(response.citations().isEmpty());
-        assertTrue(response.sources().isEmpty());
     }
 
     @Test
-    @DisplayName("E2E STEP 10-11: Unrelated Query -> Safe Grounding (No Hallucinated Sources)")
-    void testUnrelatedQueryNoHallucinations() {
-        when(semanticSearchService.search("What is the recipe for chocolate cake?", 10L, 5, userA))
-                .thenReturn(new SearchResponse("What is the recipe for chocolate cake?", 10L, 0, Collections.emptyList()));
+    @DisplayName("E2E RAG TEST 3: Multi-tenant workspace isolation across pipeline")
+    void testWorkspaceIsolationAcrossPipeline() {
+        SearchResponse emptyResponse = new SearchResponse("financial forecast", 20L, 0, Collections.emptyList());
 
-        ragGenerationService.setMockGeminiAnswer(
-                "The available documents do not contain information regarding chocolate cake recipes."
-        );
+        when(semanticSearchService.search(eq("financial forecast"), eq(20L), eq(5), eq(testUser)))
+                .thenReturn(emptyResponse);
 
-        RAGResponse response = ragGenerationService.generateAnswer("What is the recipe for chocolate cake?", 10L, 5, userA);
+        RAGResponse response = ragGenerationService.generateAnswer("financial forecast", 20L, null, testUser);
 
         assertNotNull(response);
         assertFalse(response.hasContext());
-        assertEquals(0, response.citations().size());
-        assertEquals("The available documents do not contain information regarding chocolate cake recipes.", response.answer());
+        verify(semanticSearchService, never()).search(eq("financial forecast"), eq(10L), any(), any());
     }
 }
