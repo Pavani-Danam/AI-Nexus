@@ -1,5 +1,6 @@
 package com.ainexus.service;
 
+import com.ainexus.dto.EnhancedQuery;
 import com.ainexus.dto.RAGResponse;
 import com.ainexus.dto.SearchResponse;
 import com.ainexus.dto.SearchResultItem;
@@ -28,6 +29,9 @@ class RAGEndToEndIntegrationTest {
 
     @Mock
     private SemanticSearchService semanticSearchService;
+
+    @Mock
+    private QueryEnhancementService queryEnhancementService;
 
     private RAGGenerationServiceImpl ragGenerationService;
     private User testUser;
@@ -60,7 +64,11 @@ class RAGEndToEndIntegrationTest {
         ReflectionTestUtils.setField(contextManagementService, "minRelevanceScore", 0.35);
         ReflectionTestUtils.setField(contextManagementService, "maxContextCharacters", 8000);
 
-        RAGRetrievalServiceImpl retrievalService = new RAGRetrievalServiceImpl(semanticSearchService, contextManagementService);
+        RAGRetrievalServiceImpl retrievalService = new RAGRetrievalServiceImpl(
+                semanticSearchService,
+                contextManagementService,
+                queryEnhancementService
+        );
         ReflectionTestUtils.setField(retrievalService, "defaultTopK", 5);
 
         RAGPromptBuilderImpl promptBuilder = new RAGPromptBuilderImpl();
@@ -78,6 +86,9 @@ class RAGEndToEndIntegrationTest {
     @Test
     @DisplayName("E2E RAG TEST 1: Full pipeline produces grounded answer with citations")
     void testFullRAGPipelineSuccess() {
+        when(queryEnhancementService.enhanceQuery("How does AI-Nexus RAG work?"))
+                .thenReturn(EnhancedQuery.unchanged("How does AI-Nexus RAG work?"));
+
         SearchResultItem item1 = new SearchResultItem(101L, "rag_guide.pdf", 0, 0.94, "AI-Nexus uses vector retrieval for context assembly.", 50, "application/pdf", "v-1");
         SearchResultItem item2 = new SearchResultItem(102L, "rag_guide.pdf", 1, 0.88, "Chunks are fed into Gemini with strict grounding instructions.", 60, "application/pdf", "v-2");
         SearchResponse mockResponse = new SearchResponse("How does AI-Nexus RAG work?", 10L, 2, List.of(item1, item2));
@@ -101,6 +112,9 @@ class RAGEndToEndIntegrationTest {
     @Test
     @DisplayName("E2E RAG TEST 2: Irrelevant or empty search produces controlled fallback without hallucination")
     void testFullRAGPipelineNoContextFallback() {
+        when(queryEnhancementService.enhanceQuery("What is the recipe for chocolate cake?"))
+                .thenReturn(EnhancedQuery.unchanged("What is the recipe for chocolate cake?"));
+
         SearchResponse emptyResponse = new SearchResponse("What is the recipe for chocolate cake?", 10L, 0, Collections.emptyList());
 
         when(semanticSearchService.search(eq("What is the recipe for chocolate cake?"), eq(10L), eq(5), eq(testUser)))
@@ -116,6 +130,9 @@ class RAGEndToEndIntegrationTest {
     @Test
     @DisplayName("E2E RAG TEST 3: Multi-tenant workspace isolation across pipeline")
     void testWorkspaceIsolationAcrossPipeline() {
+        when(queryEnhancementService.enhanceQuery("financial forecast"))
+                .thenReturn(EnhancedQuery.unchanged("financial forecast"));
+
         SearchResponse emptyResponse = new SearchResponse("financial forecast", 20L, 0, Collections.emptyList());
 
         when(semanticSearchService.search(eq("financial forecast"), eq(20L), eq(5), eq(testUser)))

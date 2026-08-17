@@ -1,10 +1,12 @@
 package com.ainexus.service.impl;
 
+import com.ainexus.dto.EnhancedQuery;
 import com.ainexus.dto.RAGContext;
 import com.ainexus.dto.SearchResponse;
 import com.ainexus.dto.SearchResultItem;
 import com.ainexus.entity.User;
 import com.ainexus.service.ContextManagementService;
+import com.ainexus.service.QueryEnhancementService;
 import com.ainexus.service.RAGRetrievalService;
 import com.ainexus.service.SemanticSearchService;
 import org.slf4j.Logger;
@@ -23,14 +25,17 @@ public class RAGRetrievalServiceImpl implements RAGRetrievalService {
 
     private final SemanticSearchService semanticSearchService;
     private final ContextManagementService contextManagementService;
+    private final QueryEnhancementService queryEnhancementService;
 
     @Value("${app.rag.top-k:5}")
     private int defaultTopK;
 
     public RAGRetrievalServiceImpl(SemanticSearchService semanticSearchService,
-                                   ContextManagementService contextManagementService) {
+                                   ContextManagementService contextManagementService,
+                                   QueryEnhancementService queryEnhancementService) {
         this.semanticSearchService = Objects.requireNonNull(semanticSearchService, "SemanticSearchService must not be null");
         this.contextManagementService = Objects.requireNonNull(contextManagementService, "ContextManagementService must not be null");
+        this.queryEnhancementService = Objects.requireNonNull(queryEnhancementService, "QueryEnhancementService must not be null");
     }
 
     @Override
@@ -44,16 +49,21 @@ public class RAGRetrievalServiceImpl implements RAGRetrievalService {
 
         int topK = (requestedTopK != null && requestedTopK > 0) ? requestedTopK : defaultTopK;
 
-        logger.info("Executing RAG retrieval for workspace id: {} with query: '{}' (topK: {})", workspaceId, query.trim(), topK);
+        // 1. Query Enhancement / Rewriting
+        EnhancedQuery enhancedQuery = queryEnhancementService.enhanceQuery(query.trim());
+        String effectiveRetrievalQuery = enhancedQuery.retrievalQuery();
 
-        // 1. Retrieve authorized vector results from SemanticSearchService
-        SearchResponse searchResponse = semanticSearchService.search(query.trim(), workspaceId, topK, authenticatedUser);
+        logger.info("Executing RAG retrieval for workspace id: {} with effective retrieval query: '{}' (original: '{}', topK: {})",
+                workspaceId, effectiveRetrievalQuery, enhancedQuery.originalQuery(), topK);
+
+        // 2. Retrieve authorized vector results using the effective retrieval query
+        SearchResponse searchResponse = semanticSearchService.search(effectiveRetrievalQuery, workspaceId, topK, authenticatedUser);
 
         List<SearchResultItem> rawResults = (searchResponse != null && searchResponse.results() != null)
                 ? searchResponse.results()
                 : Collections.emptyList();
 
-        // 2. Delegate filtering, deduplication, ordering, and context limits to ContextManagementService
-        return contextManagementService.processAndAssembleContext(query.trim(), workspaceId, rawResults);
+        // 3. Delegate filtering, deduplication, ordering, and context limits to ContextManagementService
+        return contextManagementService.processAndAssembleContext(enhancedQuery.originalQuery(), workspaceId, rawResults);
     }
 }
