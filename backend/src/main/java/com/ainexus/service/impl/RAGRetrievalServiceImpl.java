@@ -8,6 +8,7 @@ import com.ainexus.service.ContextManagementService;
 import com.ainexus.service.MultiQueryRetrievalService;
 import com.ainexus.service.QueryEnhancementService;
 import com.ainexus.service.RAGRetrievalService;
+import com.ainexus.service.RerankingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -24,16 +25,19 @@ public class RAGRetrievalServiceImpl implements RAGRetrievalService {
     private final ContextManagementService contextManagementService;
     private final QueryEnhancementService queryEnhancementService;
     private final MultiQueryRetrievalService multiQueryRetrievalService;
+    private final RerankingService rerankingService;
 
     @Value("${app.rag.top-k:5}")
     private int defaultTopK;
 
     public RAGRetrievalServiceImpl(ContextManagementService contextManagementService,
                                    QueryEnhancementService queryEnhancementService,
-                                   MultiQueryRetrievalService multiQueryRetrievalService) {
+                                   MultiQueryRetrievalService multiQueryRetrievalService,
+                                   RerankingService rerankingService) {
         this.contextManagementService = Objects.requireNonNull(contextManagementService, "ContextManagementService must not be null");
         this.queryEnhancementService = Objects.requireNonNull(queryEnhancementService, "QueryEnhancementService must not be null");
         this.multiQueryRetrievalService = Objects.requireNonNull(multiQueryRetrievalService, "MultiQueryRetrievalService must not be null");
+        this.rerankingService = Objects.requireNonNull(rerankingService, "RerankingService must not be null");
     }
 
     @Override
@@ -62,7 +66,10 @@ public class RAGRetrievalServiceImpl implements RAGRetrievalService {
                 authenticatedUser
         );
 
-        // 3. Delegate filtering, context budget limit, and final assembly to ContextManagementService
-        return contextManagementService.processAndAssembleContext(enhancedQuery.originalQuery(), workspaceId, rawResults);
+        // 3. Result Reranking: improve ordering so most relevant chunks are selected first
+        List<SearchResultItem> rerankedResults = rerankingService.rerank(effectiveRetrievalQuery, rawResults);
+
+        // 4. Delegate filtering, context budget limit, and final assembly to ContextManagementService
+        return contextManagementService.processAndAssembleContext(enhancedQuery.originalQuery(), workspaceId, rerankedResults);
     }
 }

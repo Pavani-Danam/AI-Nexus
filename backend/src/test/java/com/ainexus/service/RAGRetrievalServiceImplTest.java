@@ -1,7 +1,6 @@
 package com.ainexus.service;
 
 import com.ainexus.dto.EnhancedQuery;
-import com.ainexus.dto.RAGChunk;
 import com.ainexus.dto.RAGContext;
 import com.ainexus.dto.SearchResultItem;
 import com.ainexus.entity.User;
@@ -31,6 +30,9 @@ class RAGRetrievalServiceImplTest {
     @Mock
     private MultiQueryRetrievalService multiQueryRetrievalService;
 
+    @Mock
+    private RerankingService rerankingService;
+
     private ContextManagementServiceImpl contextManagementService;
     private RAGRetrievalServiceImpl ragRetrievalService;
     private User testUser;
@@ -44,7 +46,8 @@ class RAGRetrievalServiceImplTest {
         ragRetrievalService = new RAGRetrievalServiceImpl(
                 contextManagementService,
                 queryEnhancementService,
-                multiQueryRetrievalService
+                multiQueryRetrievalService,
+                rerankingService
         );
         ReflectionTestUtils.setField(ragRetrievalService, "defaultTopK", 5);
 
@@ -54,7 +57,7 @@ class RAGRetrievalServiceImplTest {
     }
 
     @Test
-    @DisplayName("TEST 1: Valid retrieval uses enhanced query and multi-query retrieval")
+    @DisplayName("TEST 1: Valid retrieval uses enhanced query, multi-query, and reranking")
     void testSuccessfulRetrieval() {
         when(queryEnhancementService.enhanceQuery("architecture"))
                 .thenReturn(EnhancedQuery.of("architecture", "software architecture and microservice design"));
@@ -64,6 +67,9 @@ class RAGRetrievalServiceImplTest {
         when(multiQueryRetrievalService.retrieveMultiQueryResults(eq("software architecture and microservice design"), eq(1L), eq(5), eq(testUser)))
                 .thenReturn(List.of(item1));
 
+        when(rerankingService.rerank(eq("software architecture and microservice design"), anyList()))
+                .thenReturn(List.of(item1));
+
         RAGContext context = ragRetrievalService.retrieveAndAssembleContext("architecture", 1L, null, testUser);
 
         assertNotNull(context);
@@ -71,6 +77,7 @@ class RAGRetrievalServiceImplTest {
         assertEquals(1, context.chunks().size());
         assertEquals("arch.pdf", context.chunks().get(0).filename());
         assertTrue(context.assembledContext().contains("AI-Nexus uses vector retrieval."));
+        verify(rerankingService, times(1)).rerank(eq("software architecture and microservice design"), anyList());
     }
 
     @Test
@@ -80,6 +87,9 @@ class RAGRetrievalServiceImplTest {
                 .thenReturn(EnhancedQuery.unchanged("unknown"));
 
         when(multiQueryRetrievalService.retrieveMultiQueryResults(eq("unknown"), eq(1L), eq(5), eq(testUser)))
+                .thenReturn(Collections.emptyList());
+
+        when(rerankingService.rerank(eq("unknown"), eq(Collections.emptyList())))
                 .thenReturn(Collections.emptyList());
 
         RAGContext context = ragRetrievalService.retrieveAndAssembleContext("unknown", 1L, null, testUser);
