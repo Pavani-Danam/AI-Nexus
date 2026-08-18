@@ -4,6 +4,7 @@ import com.ainexus.dto.EnhancedQuery;
 import com.ainexus.dto.RAGResponse;
 import com.ainexus.dto.SearchResultItem;
 import com.ainexus.entity.User;
+import com.ainexus.service.impl.ContextCompressionServiceImpl;
 import com.ainexus.service.impl.ContextManagementServiceImpl;
 import com.ainexus.service.impl.RAGGenerationServiceImpl;
 import com.ainexus.service.impl.RAGPromptBuilderImpl;
@@ -68,11 +69,16 @@ class RAGEndToEndIntegrationTest {
         ReflectionTestUtils.setField(rerankingService, "rerankingEnabled", true);
         ReflectionTestUtils.setField(rerankingService, "maxResults", 10);
 
+        ContextCompressionServiceImpl compressionService = new ContextCompressionServiceImpl();
+        ReflectionTestUtils.setField(compressionService, "compressionEnabled", true);
+        ReflectionTestUtils.setField(compressionService, "minSentenceRelevance", 0.20);
+
         RAGRetrievalServiceImpl retrievalService = new RAGRetrievalServiceImpl(
                 contextManagementService,
                 queryEnhancementService,
                 multiQueryRetrievalService,
-                rerankingService
+                rerankingService,
+                compressionService
         );
         ReflectionTestUtils.setField(retrievalService, "defaultTopK", 5);
 
@@ -89,7 +95,7 @@ class RAGEndToEndIntegrationTest {
     }
 
     @Test
-    @DisplayName("E2E RAG TEST 1: Full multi-query and reranking pipeline produces grounded answer with citations")
+    @DisplayName("E2E RAG TEST 1: Full multi-query, reranking, and compression pipeline produces grounded answer with citations")
     void testFullRAGPipelineSuccess() {
         when(queryEnhancementService.enhanceQuery("How does AI-Nexus RAG work?"))
                 .thenReturn(EnhancedQuery.unchanged("How does AI-Nexus RAG work?"));

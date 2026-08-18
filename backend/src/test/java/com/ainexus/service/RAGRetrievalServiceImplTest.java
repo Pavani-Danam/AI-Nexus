@@ -33,6 +33,9 @@ class RAGRetrievalServiceImplTest {
     @Mock
     private RerankingService rerankingService;
 
+    @Mock
+    private ContextCompressionService contextCompressionService;
+
     private ContextManagementServiceImpl contextManagementService;
     private RAGRetrievalServiceImpl ragRetrievalService;
     private User testUser;
@@ -47,7 +50,8 @@ class RAGRetrievalServiceImplTest {
                 contextManagementService,
                 queryEnhancementService,
                 multiQueryRetrievalService,
-                rerankingService
+                rerankingService,
+                contextCompressionService
         );
         ReflectionTestUtils.setField(ragRetrievalService, "defaultTopK", 5);
 
@@ -57,7 +61,7 @@ class RAGRetrievalServiceImplTest {
     }
 
     @Test
-    @DisplayName("TEST 1: Valid retrieval uses enhanced query, multi-query, and reranking")
+    @DisplayName("TEST 1: Valid retrieval pipeline uses query enhancement, multi-query, reranking, and compression")
     void testSuccessfulRetrieval() {
         when(queryEnhancementService.enhanceQuery("architecture"))
                 .thenReturn(EnhancedQuery.of("architecture", "software architecture and microservice design"));
@@ -70,6 +74,9 @@ class RAGRetrievalServiceImplTest {
         when(rerankingService.rerank(eq("software architecture and microservice design"), anyList()))
                 .thenReturn(List.of(item1));
 
+        when(contextCompressionService.compressContext(eq("software architecture and microservice design"), anyList()))
+                .thenReturn(List.of(item1));
+
         RAGContext context = ragRetrievalService.retrieveAndAssembleContext("architecture", 1L, null, testUser);
 
         assertNotNull(context);
@@ -78,6 +85,7 @@ class RAGRetrievalServiceImplTest {
         assertEquals("arch.pdf", context.chunks().get(0).filename());
         assertTrue(context.assembledContext().contains("AI-Nexus uses vector retrieval."));
         verify(rerankingService, times(1)).rerank(eq("software architecture and microservice design"), anyList());
+        verify(contextCompressionService, times(1)).compressContext(eq("software architecture and microservice design"), anyList());
     }
 
     @Test
@@ -90,6 +98,9 @@ class RAGRetrievalServiceImplTest {
                 .thenReturn(Collections.emptyList());
 
         when(rerankingService.rerank(eq("unknown"), eq(Collections.emptyList())))
+                .thenReturn(Collections.emptyList());
+
+        when(contextCompressionService.compressContext(eq("unknown"), eq(Collections.emptyList())))
                 .thenReturn(Collections.emptyList());
 
         RAGContext context = ragRetrievalService.retrieveAndAssembleContext("unknown", 1L, null, testUser);

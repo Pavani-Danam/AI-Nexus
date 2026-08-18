@@ -4,6 +4,7 @@ import com.ainexus.dto.EnhancedQuery;
 import com.ainexus.dto.RAGContext;
 import com.ainexus.dto.SearchResultItem;
 import com.ainexus.entity.User;
+import com.ainexus.service.ContextCompressionService;
 import com.ainexus.service.ContextManagementService;
 import com.ainexus.service.MultiQueryRetrievalService;
 import com.ainexus.service.QueryEnhancementService;
@@ -26,6 +27,7 @@ public class RAGRetrievalServiceImpl implements RAGRetrievalService {
     private final QueryEnhancementService queryEnhancementService;
     private final MultiQueryRetrievalService multiQueryRetrievalService;
     private final RerankingService rerankingService;
+    private final ContextCompressionService contextCompressionService;
 
     @Value("${app.rag.top-k:5}")
     private int defaultTopK;
@@ -33,11 +35,13 @@ public class RAGRetrievalServiceImpl implements RAGRetrievalService {
     public RAGRetrievalServiceImpl(ContextManagementService contextManagementService,
                                    QueryEnhancementService queryEnhancementService,
                                    MultiQueryRetrievalService multiQueryRetrievalService,
-                                   RerankingService rerankingService) {
+                                   RerankingService rerankingService,
+                                   ContextCompressionService contextCompressionService) {
         this.contextManagementService = Objects.requireNonNull(contextManagementService, "ContextManagementService must not be null");
         this.queryEnhancementService = Objects.requireNonNull(queryEnhancementService, "QueryEnhancementService must not be null");
         this.multiQueryRetrievalService = Objects.requireNonNull(multiQueryRetrievalService, "MultiQueryRetrievalService must not be null");
         this.rerankingService = Objects.requireNonNull(rerankingService, "RerankingService must not be null");
+        this.contextCompressionService = Objects.requireNonNull(contextCompressionService, "ContextCompressionService must not be null");
     }
 
     @Override
@@ -69,7 +73,10 @@ public class RAGRetrievalServiceImpl implements RAGRetrievalService {
         // 3. Result Reranking: improve ordering so most relevant chunks are selected first
         List<SearchResultItem> rerankedResults = rerankingService.rerank(effectiveRetrievalQuery, rawResults);
 
-        // 4. Delegate filtering, context budget limit, and final assembly to ContextManagementService
-        return contextManagementService.processAndAssembleContext(enhancedQuery.originalQuery(), workspaceId, rerankedResults);
+        // 4. Context Compression: condense text by filtering irrelevant sentences while preserving source facts
+        List<SearchResultItem> compressedResults = contextCompressionService.compressContext(effectiveRetrievalQuery, rerankedResults);
+
+        // 5. Delegate filtering, context budget limit, and final assembly to ContextManagementService
+        return contextManagementService.processAndAssembleContext(enhancedQuery.originalQuery(), workspaceId, compressedResults);
     }
 }
