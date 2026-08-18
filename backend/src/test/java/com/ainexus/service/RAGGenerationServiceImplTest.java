@@ -102,7 +102,7 @@ class RAGGenerationServiceImplTest {
         when(ragRetrievalService.retrieveAndAssembleContext(eq("What are the specifics of Policy X?"), eq(1L), eq(5), eq(testUser)))
                 .thenReturn(context);
 
-        RAGPrompt prompt = new RAGPrompt("System prompt", "User prompt", "USER: What is policy?\nASSISTANT: Policy X.", "System + User prompt", true);
+        RAGPrompt prompt = new RAGPrompt("System prompt", "Retrieved Context", "follow up", "System + User prompt", true);
         when(ragPromptBuilder.buildPrompt(eq("follow up"), eq(context), eq(relevantMemory)))
                 .thenReturn(prompt);
 
@@ -122,7 +122,7 @@ class RAGGenerationServiceImplTest {
         when(ragRetrievalService.retrieveAndAssembleContext(eq("leave policy"), eq(1L), eq(5), eq(testUser)))
                 .thenReturn(context);
 
-        RAGPrompt prompt = new RAGPrompt("System", "User", null, "Full Prompt", true);
+        RAGPrompt prompt = new RAGPrompt("System", "Context", "leave policy", "Full Prompt", true);
         when(ragPromptBuilder.buildPrompt(eq("leave policy"), eq(context), isNull()))
                 .thenReturn(prompt);
         when(semanticCacheService.lookup("leave policy", 1L, testUser)).thenReturn(Optional.empty());
