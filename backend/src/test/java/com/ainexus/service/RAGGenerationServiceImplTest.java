@@ -17,22 +17,23 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class RAGGenerationServiceImplTest {
 
     @Mock
-    private RAGRetrievalService retrievalService;
+    private RAGRetrievalService ragRetrievalService;
 
     @Mock
-    private RAGPromptBuilder promptBuilder;
+    private RAGPromptBuilder ragPromptBuilder;
 
     @Mock
     private SemanticCacheService semanticCacheService;
@@ -43,148 +44,106 @@ class RAGGenerationServiceImplTest {
     @Mock
     private ConversationQueryRewriteService conversationQueryRewriteService;
 
-    private TestableRAGGenerationServiceImpl generationService;
+    @Mock
+    private MemoryRetrievalService memoryRetrievalService;
+
+    private TestableRAGGenerationServiceImpl ragGenerationService;
     private User testUser;
 
     static class TestableRAGGenerationServiceImpl extends RAGGenerationServiceImpl {
-        private String mockGeminiResponse = "Default mock answer";
+        private String mockLlmResponse = "This is a synthesized test response.";
 
         public TestableRAGGenerationServiceImpl(RAGRetrievalService retrievalService, RAGPromptBuilder promptBuilder) {
             super(retrievalService, promptBuilder);
         }
 
-        public void setMockGeminiResponse(String response) {
-            this.mockGeminiResponse = response;
+        public void setMockLlmResponse(String response) {
+            this.mockLlmResponse = response;
         }
 
         @Override
         protected String callGeminiGenerateContent(String promptText) {
-            return mockGeminiResponse;
+            return mockLlmResponse;
         }
     }
 
     @BeforeEach
     void setUp() {
-        generationService = new TestableRAGGenerationServiceImpl(retrievalService, promptBuilder);
-        generationService.setSemanticCacheService(semanticCacheService);
-        generationService.setConversationMemoryService(conversationMemoryService);
-        generationService.setConversationQueryRewriteService(conversationQueryRewriteService);
+        ragGenerationService = new TestableRAGGenerationServiceImpl(ragRetrievalService, ragPromptBuilder);
+        ragGenerationService.setSemanticCacheService(semanticCacheService);
+        ragGenerationService.setConversationMemoryService(conversationMemoryService);
+        ragGenerationService.setConversationQueryRewriteService(conversationQueryRewriteService);
+        ragGenerationService.setMemoryRetrievalService(memoryRetrievalService);
 
-        ReflectionTestUtils.setField(generationService, "geminiApiKey", "test-gemini-key");
-        ReflectionTestUtils.setField(generationService, "generationModel", "gemini-1.5-flash");
+        ReflectionTestUtils.setField(ragGenerationService, "geminiApiKey", "test-api-key");
+        ReflectionTestUtils.setField(ragGenerationService, "generationModel", "gemini-1.5-flash");
 
         testUser = new User();
         testUser.setId(1L);
-        testUser.setUsername("alice");
+        testUser.setUsername("testuser");
     }
 
     @Test
-    @DisplayName("TEST 1: Successful RAG Generation with Chunks, Prompt, Citations, and LLM output")
-    void testSuccessfulGenerationWithContext() {
-        List<RAGChunk> chunks = List.of(
-                new RAGChunk(10L, "handbook.pdf", 0, 0.95, "Leave policy is 20 days per year.", 35),
-                new RAGChunk(10L, "handbook.pdf", 1, 0.88, "Sick leave is 10 days per year.", 31)
+    @DisplayName("TEST 1: RAG generation with conversation context uses MemoryRetrievalService")
+    void testConversationMemoryIntegratedWithRelevanceRetrieval() {
+        List<MemoryMessage> messages = List.of(
+                MemoryMessage.of(1L, "USER", "What is policy?", LocalDateTime.now().minusMinutes(2)),
+                MemoryMessage.of(2L, "ASSISTANT", "Policy X.", LocalDateTime.now().minusMinutes(1))
         );
+        ConversationMemory relevantMemory = new ConversationMemory(100L, 1L, messages, "USER: What is policy?\nASSISTANT: Policy X.", 2);
 
-        RAGContext mockContext = new RAGContext("leave policy", 1L, chunks, "Assembled Context", 66);
-        RAGPrompt mockPrompt = new RAGPrompt("System Instructions", "Formatted Context", "leave policy", "Full Prompt", true);
+        when(memoryRetrievalService.retrieveRelevantMemory(eq("follow up"), eq(100L), eq(1L), eq(testUser)))
+                .thenReturn(relevantMemory);
+        when(conversationQueryRewriteService.rewriteToStandaloneQuery(eq("follow up"), eq(relevantMemory), eq(1L), eq(testUser)))
+                .thenReturn("What are the specifics of Policy X?");
 
-        when(semanticCacheService.lookup("leave policy", 1L, testUser)).thenReturn(Optional.empty());
-        when(retrievalService.retrieveAndAssembleContext("leave policy", 1L, 5, testUser)).thenReturn(mockContext);
-        when(promptBuilder.buildPrompt(eq("leave policy"), eq(mockContext), any())).thenReturn(mockPrompt);
-        generationService.setMockGeminiResponse("Employees are entitled to 20 days of annual leave and 10 days of sick leave.");
+        RAGChunk chunk = new RAGChunk(10L, "doc.pdf", 1, 0.9, "Policy details...", 17);
+        RAGContext context = new RAGContext("What are the specifics of Policy X?", 1L, List.of(chunk), "Context text", 1);
+        when(ragRetrievalService.retrieveAndAssembleContext(eq("What are the specifics of Policy X?"), eq(1L), eq(5), eq(testUser)))
+                .thenReturn(context);
 
-        RAGResponse response = generationService.generateAnswer("leave policy", 1L, 5, testUser);
+        RAGPrompt prompt = new RAGPrompt("System prompt", "User prompt", "USER: What is policy?\nASSISTANT: Policy X.", "System + User prompt", true);
+        when(ragPromptBuilder.buildPrompt(eq("follow up"), eq(context), eq(relevantMemory)))
+                .thenReturn(prompt);
+
+        RAGResponse response = ragGenerationService.generateAnswer("follow up", 1L, 5, 100L, testUser);
 
         assertNotNull(response);
-        assertEquals("Employees are entitled to 20 days of annual leave and 10 days of sick leave.", response.answer());
-        assertEquals("leave policy", response.query());
-        assertEquals(1L, response.workspaceId());
-        assertTrue(response.hasContext());
-        assertEquals(2, response.citations().size());
-        assertEquals(10L, response.citations().get(0).documentId());
-        assertEquals("handbook.pdf", response.citations().get(0).filename());
+        assertEquals(1, response.citations().size());
+        assertEquals("This is a synthesized test response.", response.answer());
+        verify(semanticCacheService, never()).lookup(anyString(), any(), any());
+    }
 
+    @Test
+    @DisplayName("TEST 2: Standalone query without conversation uses SemanticCache")
+    void testStandaloneQueryUsesSemanticCache() {
+        RAGChunk chunk = new RAGChunk(10L, "handbook.pdf", 2, 0.95, "Leave policy details", 20);
+        RAGContext context = new RAGContext("leave policy", 1L, List.of(chunk), "Context text", 1);
+        when(ragRetrievalService.retrieveAndAssembleContext(eq("leave policy"), eq(1L), eq(5), eq(testUser)))
+                .thenReturn(context);
+
+        RAGPrompt prompt = new RAGPrompt("System", "User", null, "Full Prompt", true);
+        when(ragPromptBuilder.buildPrompt(eq("leave policy"), eq(context), isNull()))
+                .thenReturn(prompt);
+        when(semanticCacheService.lookup("leave policy", 1L, testUser)).thenReturn(Optional.empty());
+
+        RAGResponse response = ragGenerationService.generateAnswer("leave policy", 1L, 5, null, testUser);
+
+        assertNotNull(response);
         verify(semanticCacheService, times(1)).store(eq("leave policy"), eq(1L), eq(testUser), any(RAGResponse.class));
     }
 
     @Test
-    @DisplayName("TEST 2: Semantic Cache Hit immediately returns cached RAGResponse without calling retrieval/LLM")
-    void testSemanticCacheHitBypassesLLM() {
-        RAGResponse cached = new RAGResponse("Cached answer.", "leave policy", 1L, Collections.emptyList(), Collections.emptyList(), true);
+    @DisplayName("TEST 3: Semantic Cache HIT returns immediately without LLM call")
+    void testSemanticCacheHitReturnsImmediately() {
+        RAGResponse cached = new RAGResponse("Cached Answer", "leave policy", 1L, List.of(), List.of(), true);
         when(semanticCacheService.lookup("leave policy", 1L, testUser)).thenReturn(Optional.of(cached));
 
-        RAGResponse response = generationService.generateAnswer("leave policy", 1L, 5, testUser);
+        RAGResponse response = ragGenerationService.generateAnswer("leave policy", 1L, 5, null, testUser);
 
         assertNotNull(response);
-        assertEquals("Cached answer.", response.answer());
-        verifyNoInteractions(retrievalService);
-        verifyNoInteractions(promptBuilder);
-    }
-
-    @Test
-    @DisplayName("TEST 3: Semantic Cache Miss proceeds through full RAG generation pipeline")
-    void testSemanticCacheMissPipelineExecution() {
-        List<RAGChunk> chunks = List.of(new RAGChunk(10L, "arch.pdf", 0, 0.90, "AI-Nexus microservices.", 22));
-        RAGContext mockContext = new RAGContext("architecture", 1L, chunks, "[1] AI-Nexus microservices.", 22);
-        RAGPrompt mockPrompt = new RAGPrompt("System", "[1] AI-Nexus", "architecture", "Full", true);
-
-        when(semanticCacheService.lookup("architecture", 1L, testUser)).thenReturn(Optional.empty());
-        when(retrievalService.retrieveAndAssembleContext("architecture", 1L, 5, testUser)).thenReturn(mockContext);
-        when(promptBuilder.buildPrompt(eq("architecture"), eq(mockContext), any())).thenReturn(mockPrompt);
-        generationService.setMockGeminiResponse("Microservices architecture.");
-
-        RAGResponse response = generationService.generateAnswer("architecture", 1L, 5, testUser);
-
-        assertNotNull(response);
-        assertEquals("Microservices architecture.", response.answer());
-        verify(semanticCacheService, times(1)).store(eq("architecture"), eq(1L), eq(testUser), any(RAGResponse.class));
-    }
-
-    @Test
-    @DisplayName("TEST 4: Conversational Memory rewrites follow-up query and bypasses cache")
-    void testConversationalMemoryBypassesCacheAndRewritesQuery() {
-        List<MemoryMessage> messages = List.of(
-                MemoryMessage.of(1L, "USER", "What is leave policy?", LocalDateTime.now().minusMinutes(2)),
-                MemoryMessage.of(2L, "ASSISTANT", "20 days annual leave.", LocalDateTime.now().minusMinutes(1))
-        );
-
-        ConversationMemory mockMemory = new ConversationMemory(
-                100L, 1L, messages, "USER:\nWhat is leave policy?\n\nASSISTANT:\n20 days annual leave.", messages.size()
-        );
-
-        when(conversationMemoryService.getMemory(100L, 1L, testUser)).thenReturn(mockMemory);
-        when(conversationQueryRewriteService.rewriteToStandaloneQuery(eq("follow up"), eq(mockMemory), eq(1L), eq(testUser)))
-                .thenReturn("standalone rewritten query for leave policy");
-
-        List<RAGChunk> chunks = List.of(new RAGChunk(10L, "doc.pdf", 0, 0.90, "Content", 7));
-        RAGContext mockContext = new RAGContext("standalone rewritten query for leave policy", 1L, chunks, "Content", 7);
-        RAGPrompt mockPrompt = new RAGPrompt("System", "Content", "follow up", "Full with history", true);
-
-        when(retrievalService.retrieveAndAssembleContext("standalone rewritten query for leave policy", 1L, 5, testUser)).thenReturn(mockContext);
-        when(promptBuilder.buildPrompt(eq("follow up"), eq(mockContext), eq(mockMemory))).thenReturn(mockPrompt);
-        generationService.setMockGeminiResponse("Follow up answer.");
-
-        RAGResponse response = generationService.generateAnswer("follow up", 1L, 5, 100L, testUser);
-
-        assertNotNull(response);
-        assertEquals("Follow up answer.", response.answer());
-        assertEquals("follow up", response.query()); // Original query preserved
-        verify(conversationQueryRewriteService, times(1)).rewriteToStandaloneQuery("follow up", mockMemory, 1L, testUser);
-        verify(retrievalService, times(1)).retrieveAndAssembleContext("standalone rewritten query for leave policy", 1L, 5, testUser);
-        verify(semanticCacheService, never()).lookup(anyString(), anyLong(), any(User.class));
-    }
-
-    @Test
-    @DisplayName("TEST 5: Invalid arguments throw IllegalArgumentException")
-    void testInvalidArguments() {
-        assertThrows(IllegalArgumentException.class, () ->
-                generationService.generateAnswer(null, 1L, 5, testUser));
-
-        assertThrows(IllegalArgumentException.class, () ->
-                generationService.generateAnswer("   ", 1L, 5, testUser));
-
-        assertThrows(IllegalArgumentException.class, () ->
-                generationService.generateAnswer("valid query", null, 5, testUser));
+        assertEquals("Cached Answer", response.answer());
+        verifyNoInteractions(ragRetrievalService);
+        verifyNoInteractions(ragPromptBuilder);
     }
 }

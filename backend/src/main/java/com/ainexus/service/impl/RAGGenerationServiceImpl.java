@@ -9,6 +9,7 @@ import com.ainexus.entity.User;
 import com.ainexus.exception.UnauthorizedAccessException;
 import com.ainexus.service.ConversationMemoryService;
 import com.ainexus.service.ConversationQueryRewriteService;
+import com.ainexus.service.MemoryRetrievalService;
 import com.ainexus.service.RAGGenerationService;
 import com.ainexus.service.RAGPromptBuilder;
 import com.ainexus.service.RAGRetrievalService;
@@ -41,6 +42,7 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
     private SemanticCacheService semanticCacheService;
     private ConversationMemoryService conversationMemoryService;
     private ConversationQueryRewriteService conversationQueryRewriteService;
+    private MemoryRetrievalService memoryRetrievalService;
 
     public RAGGenerationServiceImpl(RAGRetrievalService ragRetrievalService, RAGPromptBuilder ragPromptBuilder) {
         this.ragRetrievalService = ragRetrievalService;
@@ -60,6 +62,11 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
     @Autowired(required = false)
     public void setConversationQueryRewriteService(ConversationQueryRewriteService conversationQueryRewriteService) {
         this.conversationQueryRewriteService = conversationQueryRewriteService;
+    }
+
+    @Autowired(required = false)
+    public void setMemoryRetrievalService(MemoryRetrievalService memoryRetrievalService) {
+        this.memoryRetrievalService = memoryRetrievalService;
     }
 
     @Override
@@ -84,10 +91,14 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
         logger.info("Starting RAG generation for workspace id: {} with query: '{}' (conversationId: {})",
                 workspaceId, cleanQuery, conversationId);
 
-        // 1. Fetch Conversational Memory if conversationId is supplied
+        // 1. Fetch Relevance-Filtered Conversational Memory if conversationId is supplied
         ConversationMemory memory = null;
-        if (conversationId != null && conversationMemoryService != null) {
-            memory = conversationMemoryService.getMemory(conversationId, workspaceId, user);
+        if (conversationId != null) {
+            if (memoryRetrievalService != null) {
+                memory = memoryRetrievalService.retrieveRelevantMemory(cleanQuery, conversationId, workspaceId, user);
+            } else if (conversationMemoryService != null) {
+                memory = conversationMemoryService.getMemory(conversationId, workspaceId, user);
+            }
         }
 
         // 2. Conversation-Aware Query Rewriting for retrieval
@@ -113,7 +124,7 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
                 effectiveRetrievalQuery, workspaceId, limit, user
         );
 
-        // 5. Construct Grounded RAG Prompt with Memory and Retrieved Chunks
+        // 5. Construct Grounded RAG Prompt with Relevant Memory and Retrieved Chunks
         RAGPrompt ragPrompt = ragPromptBuilder.buildPrompt(cleanQuery, ragContext, memory);
 
         // 6. Call LLM to synthesize answer
