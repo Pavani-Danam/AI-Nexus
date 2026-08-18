@@ -1,5 +1,7 @@
 package com.ainexus.controller;
 
+import com.ainexus.dto.ChatResponse;
+import com.ainexus.dto.ConversationDto;
 import com.ainexus.entity.User;
 import com.ainexus.exception.ResourceNotFoundException;
 import com.ainexus.service.ChatService;
@@ -24,7 +26,7 @@ public class ChatController {
     }
 
     @PostMapping
-    public ResponseEntity<ChatService.ChatResponse> sendMessage(
+    public ResponseEntity<ChatResponse> sendMessage(
             @RequestBody ChatRequest request,
             Authentication authentication) {
 
@@ -36,7 +38,7 @@ public class ChatController {
                 .or(() -> userService.getUserByEmail(authentication.getName()))
                 .orElseThrow(() -> new ResourceNotFoundException("Authenticated user not found"));
 
-        ChatService.ChatResponse response = chatService.processChat(
+        ChatResponse response = chatService.processChat(
                 request.conversationId(),
                 request.workspaceId(),
                 user,
@@ -47,7 +49,7 @@ public class ChatController {
     }
 
     @GetMapping("/conversations")
-    public ResponseEntity<List<ChatService.ConversationDto>> getConversations(
+    public ResponseEntity<List<ConversationDto>> getConversations(
             @RequestParam("workspaceId") Long workspaceId,
             Authentication authentication) {
 
@@ -59,7 +61,7 @@ public class ChatController {
                 .or(() -> userService.getUserByEmail(authentication.getName()))
                 .orElseThrow(() -> new ResourceNotFoundException("Authenticated user not found"));
 
-        List<ChatService.ConversationDto> conversations = chatService.getUserConversations(user, workspaceId);
+        List<ConversationDto> conversations = chatService.getUserConversations(user, workspaceId);
         return ResponseEntity.ok(conversations);
     }
 

@@ -1,11 +1,13 @@
 package com.ainexus.service.impl;
 
+import com.ainexus.dto.ConversationMemory;
 import com.ainexus.dto.RAGCitation;
 import com.ainexus.dto.RAGChunk;
 import com.ainexus.dto.RAGContext;
 import com.ainexus.dto.RAGPrompt;
 import com.ainexus.dto.RAGResponse;
 import com.ainexus.entity.User;
+import com.ainexus.service.ConversationMemoryService;
 import com.ainexus.service.RAGGenerationService;
 import com.ainexus.service.RAGPromptBuilder;
 import com.ainexus.service.RAGRetrievalService;
@@ -35,6 +37,7 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
     private final RAGPromptBuilder ragPromptBuilder;
     private final ObjectMapper objectMapper;
     private SemanticCacheService semanticCacheService;
+    private ConversationMemoryService conversationMemoryService;
 
     @Value("${app.ai.gemini.api-key:}")
     private String geminiApiKey;
@@ -62,8 +65,18 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
         this.semanticCacheService = semanticCacheService;
     }
 
+    @Autowired(required = false)
+    public void setConversationMemoryService(ConversationMemoryService conversationMemoryService) {
+        this.conversationMemoryService = conversationMemoryService;
+    }
+
     @Override
     public RAGResponse generateAnswer(String query, Long workspaceId, Integer topK, User authenticatedUser) {
+        return generateAnswer(query, workspaceId, topK, null, authenticatedUser);
+    }
+
+    @Override
+    public RAGResponse generateAnswer(String query, Long workspaceId, Integer topK, Long conversationId, User authenticatedUser) {
         if (query == null || query.trim().isEmpty()) {
             throw new IllegalArgumentException("Query must not be null or blank.");
         }
@@ -73,8 +86,16 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
 
         String cleanQuery = query.trim();
 
-        // 1. Semantic Cache Lookup
-        if (semanticCacheService != null) {
+        // 1. Retrieve Conversational Memory if conversationId is provided
+        ConversationMemory memory = null;
+        if (conversationMemoryService != null && conversationId != null) {
+            memory = conversationMemoryService.getMemory(conversationId, workspaceId, authenticatedUser);
+        }
+
+        boolean hasMemory = memory != null && memory.hasHistory();
+
+        // 2. Semantic Cache Lookup (Only for isolated queries without multi-turn conversation memory)
+        if (semanticCacheService != null && !hasMemory) {
             Optional<RAGResponse> cachedResponse = semanticCacheService.lookup(cleanQuery, workspaceId, authenticatedUser);
             if (cachedResponse.isPresent()) {
                 logger.info("Returning cached response for workspace id: {} and query: '{}'", workspaceId, cleanQuery);
@@ -82,18 +103,19 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
             }
         }
 
-        logger.info("Starting RAG generation for workspace id: {} with query: '{}'", workspaceId, cleanQuery);
+        logger.info("Starting RAG generation for workspace id: {} with query: '{}' (conversationId: {})",
+                workspaceId, cleanQuery, conversationId);
 
-        // 2. Retrieve authorized context
+        // 3. Retrieve authorized context
         RAGContext ragContext = ragRetrievalService.retrieveAndAssembleContext(cleanQuery, workspaceId, topK, authenticatedUser);
 
-        // 3. Build structured RAG prompt
-        RAGPrompt ragPrompt = ragPromptBuilder.buildPrompt(cleanQuery, ragContext);
+        // 4. Build structured RAG prompt with memory
+        RAGPrompt ragPrompt = ragPromptBuilder.buildPrompt(cleanQuery, ragContext, memory);
 
-        // 4. Call Gemini model
+        // 5. Call Gemini model
         String answer = callGeminiGenerateContent(ragPrompt.fullPrompt());
 
-        // 5. Build authoritative citations from retrieved chunks (deduplicated by documentId + chunkIndex)
+        // 6. Build authoritative citations from retrieved chunks (deduplicated by documentId + chunkIndex)
         List<RAGCitation> citations = buildAuthoritativeCitations(ragContext.chunks());
 
         logger.info("Successfully completed RAG generation for workspace id: {} (chunks used: {}, citations: {})",
@@ -108,8 +130,8 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
                 ragPrompt.hasContext()
         );
 
-        // 6. Store successful response in semantic cache
-        if (semanticCacheService != null) {
+        // 7. Store successful response in semantic cache (Only if no conversation memory dependency)
+        if (semanticCacheService != null && !hasMemory) {
             semanticCacheService.store(cleanQuery, workspaceId, authenticatedUser, response);
         }
 

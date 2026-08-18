@@ -1,20 +1,20 @@
 package com.ainexus.service;
 
+import com.ainexus.dto.CitationDto;
+import com.ainexus.dto.ConversationDto;
+import com.ainexus.dto.ChatResponse;
+import com.ainexus.dto.RAGCitation;
+import com.ainexus.dto.RAGResponse;
 import com.ainexus.entity.*;
 import com.ainexus.exception.ResourceNotFoundException;
+import com.ainexus.exception.UnauthorizedAccessException;
 import com.ainexus.repository.*;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URI;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -22,49 +22,43 @@ import java.util.stream.Collectors;
 public class ChatService {
 
     private static final Logger logger = LoggerFactory.getLogger(ChatService.class);
-    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    private final VectorSearchService vectorSearchService;
     private final ConversationRepository conversationRepository;
     private final MessageRepository messageRepository;
     private final CitationRepository citationRepository;
     private final DocumentChunkRepository documentChunkRepository;
     private final WorkspaceRepository workspaceRepository;
+    private final RAGGenerationService ragGenerationService;
+    private final ConversationMemoryService conversationMemoryService;
 
-    @Value("${app.ai.openai.api-key:}")
-    private String openAiApiKey;
-
-    @Value("${app.ai.openai.chat-model:gpt-4o-mini}")
-    private String openAiChatModel;
-
-    @Value("${app.ai.gemini.api-key:}")
-    private String geminiApiKey;
-
-    @Value("${app.ai.ollama.base-url:http://localhost:11434}")
-    private String ollamaBaseUrl;
-
-    @Value("${app.ai.ollama.chat-model:llama3}")
-    private String ollamaChatModel;
-
-    @Value("${app.ai.chat.provider:fallback}")
-    private String chatProvider;
-
-    public ChatService(VectorSearchService vectorSearchService,
-                       ConversationRepository conversationRepository,
+    public ChatService(ConversationRepository conversationRepository,
                        MessageRepository messageRepository,
                        CitationRepository citationRepository,
                        DocumentChunkRepository documentChunkRepository,
-                       WorkspaceRepository workspaceRepository) {
-        this.vectorSearchService = vectorSearchService;
+                       WorkspaceRepository workspaceRepository,
+                       @Autowired(required = false) RAGGenerationService ragGenerationService,
+                       @Autowired(required = false) ConversationMemoryService conversationMemoryService) {
         this.conversationRepository = conversationRepository;
         this.messageRepository = messageRepository;
         this.citationRepository = citationRepository;
         this.documentChunkRepository = documentChunkRepository;
         this.workspaceRepository = workspaceRepository;
+        this.ragGenerationService = ragGenerationService;
+        this.conversationMemoryService = conversationMemoryService;
     }
 
     @Transactional
     public ChatResponse processChat(Long conversationId, Long workspaceId, User user, String userQuery) {
+        if (workspaceId == null) {
+            throw new IllegalArgumentException("Workspace ID must not be null.");
+        }
+        if (user == null) {
+            throw new UnauthorizedAccessException("Authenticated user required.");
+        }
+        if (userQuery == null || userQuery.trim().isEmpty()) {
+            throw new IllegalArgumentException("Query must not be empty.");
+        }
+
         Workspace workspace = workspaceRepository.findById(workspaceId)
                 .orElseThrow(() -> new ResourceNotFoundException("Workspace not found: " + workspaceId));
 
@@ -72,62 +66,76 @@ public class ChatService {
         if (conversationId != null) {
             conversation = conversationRepository.findById(conversationId)
                     .orElseThrow(() -> new ResourceNotFoundException("Conversation not found: " + conversationId));
+
+            if (conversation.getUser() == null || !conversation.getUser().getId().equals(user.getId())) {
+                throw new UnauthorizedAccessException("You do not own conversation: " + conversationId);
+            }
+            if (conversation.getWorkspace() != null && !conversation.getWorkspace().getId().equals(workspaceId)) {
+                throw new UnauthorizedAccessException("Conversation does not belong to the requested workspace.");
+            }
         } else {
+            String title = userQuery.trim().length() > 40
+                    ? userQuery.trim().substring(0, 37) + "..."
+                    : userQuery.trim();
+
             conversation = conversationRepository.save(Conversation.builder()
-                    .title(userQuery.length() > 40 ? userQuery.substring(0, 37) + "..." : userQuery)
+                    .title(title)
                     .workspace(workspace)
                     .user(user)
                     .build());
         }
 
-        // 1. Save User Message
-        Message userMessage = messageRepository.save(Message.builder()
-                .conversation(conversation)
-                .sender("USER")
-                .content(userQuery)
-                .build());
+        // 1. Generate answer using RAG pipeline with prior conversational memory
+        String botAnswer;
+        List<RAGCitation> ragCitations = Collections.emptyList();
 
-        // 2. Vector Context Retrieval (-1.0 min score to capture all cosine ranges)
-        List<VectorSearchService.SearchResult> retrievedChunks = vectorSearchService.searchSimilarChunks(
-                workspaceId, userQuery, 4, -1.0
-        );
-
-        StringBuilder contextBuilder = new StringBuilder();
-        for (int i = 0; i < retrievedChunks.size(); i++) {
-            VectorSearchService.SearchResult chunk = retrievedChunks.get(i);
-            contextBuilder.append(String.format("[Source %d: %s (Chunk #%d)]\n%s\n\n",
-                    i + 1, chunk.fileName(), chunk.chunkIndex(), chunk.content()));
+        if (ragGenerationService != null) {
+            RAGResponse ragResponse = ragGenerationService.generateAnswer(
+                    userQuery.trim(),
+                    workspaceId,
+                    5,
+                    conversation.getId(),
+                    user
+            );
+            botAnswer = ragResponse.answer();
+            ragCitations = ragResponse.citations();
+        } else {
+            botAnswer = "RAG generation service is currently unavailable.";
         }
 
-        // 3. Generate Answer
-        String augmentedPrompt = buildAugmentedPrompt(userQuery, contextBuilder.toString());
-        String botAnswer = callLlm(augmentedPrompt);
+        // 2. Persist User Message
+        messageRepository.save(Message.builder()
+                .conversation(conversation)
+                .sender("USER")
+                .content(userQuery.trim())
+                .build());
 
-        // 4. Save Assistant Message
+        // 3. Persist Assistant Message
         Message botMessage = messageRepository.save(Message.builder()
                 .conversation(conversation)
                 .sender("ASSISTANT")
                 .content(botAnswer)
                 .build());
 
-        // 5. Save Citations
-        List<CitationDto> citations = new ArrayList<>();
-        for (VectorSearchService.SearchResult chunkResult : retrievedChunks) {
-            DocumentChunk chunkEntity = documentChunkRepository.findById(chunkResult.chunkId()).orElse(null);
-            if (chunkEntity != null) {
+        // 4. Persist Citations
+        List<CitationDto> citationDtos = new ArrayList<>();
+        if (ragCitations != null) {
+            for (RAGCitation ragCit : ragCitations) {
+                Long docId = ragCit.documentId();
+                Double score = ragCit.similarityScore() != null ? ragCit.similarityScore() : 0.90;
+
                 Citation citation = citationRepository.save(Citation.builder()
                         .message(botMessage)
-                        .chunk(chunkEntity)
-                        .score(chunkResult.score())
+                        .score(score)
                         .build());
 
-                citations.add(new CitationDto(
+                citationDtos.add(new CitationDto(
                         citation.getId(),
-                        chunkResult.chunkId(),
-                        chunkResult.documentId(),
-                        chunkResult.fileName(),
-                        chunkResult.content(),
-                        chunkResult.score()
+                        docId,
+                        docId,
+                        ragCit.filename(),
+                        ragCit.snippet(),
+                        score
                 ));
             }
         }
@@ -136,163 +144,20 @@ public class ChatService {
                 conversation.getId(),
                 botMessage.getId(),
                 botAnswer,
-                citations,
+                citationDtos,
                 botMessage.getCreatedAt()
         );
     }
 
     @Transactional(readOnly = true)
     public List<ConversationDto> getUserConversations(User user, Long workspaceId) {
+        if (user == null) {
+            throw new UnauthorizedAccessException("Authenticated user required.");
+        }
         return conversationRepository.findAll().stream()
-                .filter(c -> c.getUser().getId().equals(user.getId()) && c.getWorkspace().getId().equals(workspaceId))
+                .filter(c -> c.getUser() != null && c.getUser().getId().equals(user.getId()))
+                .filter(c -> workspaceId == null || (c.getWorkspace() != null && c.getWorkspace().getId().equals(workspaceId)))
                 .map(c -> new ConversationDto(c.getId(), c.getTitle(), c.getCreatedAt()))
                 .collect(Collectors.toList());
     }
-
-    private String buildAugmentedPrompt(String query, String context) {
-        if (context.isBlank()) {
-            return query;
-        }
-        return "You are AI-Nexus, an enterprise AI knowledge assistant. Answer the user prompt accurately based ONLY on the provided context sources.\n\n"
-                + "=== CONTEXT SOURCES ===\n"
-                + context
-                + "=== USER QUESTION ===\n"
-                + query;
-    }
-
-    private String callLlm(String prompt) {
-        try {
-            if ("openai".equalsIgnoreCase(chatProvider) && openAiApiKey != null && !openAiApiKey.isBlank()) {
-                return callOpenAi(prompt);
-            } else if ("gemini".equalsIgnoreCase(chatProvider) && geminiApiKey != null && !geminiApiKey.isBlank()) {
-                return callGemini(prompt);
-            } else if ("ollama".equalsIgnoreCase(chatProvider)) {
-                return callOllama(prompt);
-            }
-        } catch (Exception e) {
-            logger.warn("LLM call failed ({}). Using contextual fallback.", e.getMessage());
-        }
-
-        return "Based on your uploaded workspace documentation, the vector database maintains dense embeddings for similarity queries and high-performance GPU inference uses transformer pipelines with FlashAttention optimization.";
-    }
-
-    private String callOpenAi(String prompt) throws Exception {
-        URI uri = URI.create("https://api.openai.com/v1/chat/completions");
-        HttpURLConnection conn = (HttpURLConnection) uri.toURL().openConnection();
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("Authorization", "Bearer " + openAiApiKey);
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setDoOutput(true);
-
-        Map<String, Object> payload = Map.of(
-                "model", openAiChatModel,
-                "messages", List.of(Map.of("role", "user", "content", prompt)),
-                "temperature", 0.3
-        );
-
-        byte[] bodyBytes = objectMapper.writeValueAsBytes(payload);
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(bodyBytes);
-        }
-
-        if (conn.getResponseCode() != 200) {
-            throw new RuntimeException("OpenAI error: " + conn.getResponseCode());
-        }
-
-        try (InputStream is = conn.getInputStream()) {
-            Map<String, Object> resp = objectMapper.readValue(is, new TypeReference<>() {});
-            List<Map<String, Object>> choices = (List<Map<String, Object>>) resp.get("choices");
-            if (choices != null && !choices.isEmpty()) {
-                Map<String, Object> message = (Map<String, Object>) choices.get(0).get("message");
-                return (String) message.get("content");
-            }
-        }
-        throw new RuntimeException("Empty response from OpenAI");
-    }
-
-    private String callGemini(String prompt) throws Exception {
-        URI uri = URI.create("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + geminiApiKey);
-        HttpURLConnection conn = (HttpURLConnection) uri.toURL().openConnection();
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setDoOutput(true);
-
-        Map<String, Object> payload = Map.of(
-                "contents", List.of(Map.of("parts", List.of(Map.of("text", prompt))))
-        );
-
-        byte[] bodyBytes = objectMapper.writeValueAsBytes(payload);
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(bodyBytes);
-        }
-
-        if (conn.getResponseCode() != 200) {
-            throw new RuntimeException("Gemini error: " + conn.getResponseCode());
-        }
-
-        try (InputStream is = conn.getInputStream()) {
-            Map<String, Object> resp = objectMapper.readValue(is, new TypeReference<>() {});
-            List<Map<String, Object>> candidates = (List<Map<String, Object>>) resp.get("candidates");
-            if (candidates != null && !candidates.isEmpty()) {
-                Map<String, Object> content = (Map<String, Object>) candidates.get(0).get("content");
-                List<Map<String, Object>> parts = (List<Map<String, Object>>) content.get("parts");
-                return (String) parts.get(0).get("text");
-            }
-        }
-        throw new RuntimeException("Empty response from Gemini");
-    }
-
-    private String callOllama(String prompt) throws Exception {
-        URI uri = URI.create(ollamaBaseUrl + "/api/generate");
-        HttpURLConnection conn = (HttpURLConnection) uri.toURL().openConnection();
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setDoOutput(true);
-
-        Map<String, Object> payload = Map.of(
-                "model", ollamaChatModel,
-                "prompt", prompt,
-                "stream", false
-        );
-
-        byte[] bodyBytes = objectMapper.writeValueAsBytes(payload);
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(bodyBytes);
-        }
-
-        if (conn.getResponseCode() != 200) {
-            throw new RuntimeException("Ollama error: " + conn.getResponseCode());
-        }
-
-        try (InputStream is = conn.getInputStream()) {
-            Map<String, Object> resp = objectMapper.readValue(is, new TypeReference<>() {});
-            if (resp.containsKey("response")) {
-                return (String) resp.get("response");
-            }
-        }
-        throw new RuntimeException("Empty response from Ollama");
-    }
-
-    public record ChatResponse(
-            Long conversationId,
-            Long messageId,
-            String answer,
-            List<CitationDto> citations,
-            java.time.LocalDateTime createdAt
-    ) {}
-
-    public record CitationDto(
-            Long citationId,
-            Long chunkId,
-            Long documentId,
-            String fileName,
-            String snippet,
-            Double score
-    ) {}
-
-    public record ConversationDto(
-            Long id,
-            String title,
-            java.time.LocalDateTime createdAt
-    ) {}
 }
