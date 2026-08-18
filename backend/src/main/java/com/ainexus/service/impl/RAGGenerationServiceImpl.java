@@ -6,6 +6,8 @@ import com.ainexus.dto.RAGContext;
 import com.ainexus.dto.RAGPrompt;
 import com.ainexus.dto.RAGResponse;
 import com.ainexus.entity.User;
+import com.ainexus.exception.ResourceNotFoundException;
+import com.ainexus.exception.UnauthorizedAccessException;
 import com.ainexus.service.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -86,7 +88,7 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
         logger.info("Starting RAG generation for workspace id: {} with query: '{}' (conversationId: {})",
                 workspaceId, cleanQuery, conversationId);
 
-        // 1. Retrieve Conversation Context with Graceful Fallback
+        // 1. Retrieve Conversation Context with Security Enforcement
         ConversationMemory conversationMemory = null;
         if (conversationId != null) {
             try {
@@ -95,6 +97,9 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
                 } else if (conversationMemoryService != null) {
                     conversationMemory = conversationMemoryService.getMemory(conversationId, workspaceId, authenticatedUser);
                 }
+            } catch (UnauthorizedAccessException | ResourceNotFoundException securityEx) {
+                // Must propagate security authorization exceptions
+                throw securityEx;
             } catch (Exception e) {
                 logger.warn("Memory retrieval failed for conversation {}: {}. Proceeding without memory context.", conversationId, e.getMessage());
                 conversationMemory = null;
