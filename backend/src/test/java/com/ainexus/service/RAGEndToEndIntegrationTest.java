@@ -1,6 +1,7 @@
 package com.ainexus.service;
 
 import com.ainexus.dto.EnhancedQuery;
+import com.ainexus.dto.RAGChunk;
 import com.ainexus.dto.RAGResponse;
 import com.ainexus.dto.SearchResultItem;
 import com.ainexus.entity.User;
@@ -10,6 +11,7 @@ import com.ainexus.service.impl.RAGGenerationServiceImpl;
 import com.ainexus.service.impl.RAGPromptBuilderImpl;
 import com.ainexus.service.impl.RAGRetrievalServiceImpl;
 import com.ainexus.service.impl.RerankingServiceImpl;
+import com.ainexus.service.impl.SemanticCacheServiceImpl;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -34,7 +36,11 @@ class RAGEndToEndIntegrationTest {
     @Mock
     private QueryEnhancementService queryEnhancementService;
 
+    @Mock
+    private EmbeddingService embeddingService;
+
     private RAGGenerationServiceImpl ragGenerationService;
+    private SemanticCacheServiceImpl semanticCacheService;
     private User testUser;
 
     static class TestableRAGGenerationServiceImpl extends RAGGenerationServiceImpl {
@@ -82,12 +88,19 @@ class RAGEndToEndIntegrationTest {
         );
         ReflectionTestUtils.setField(retrievalService, "defaultTopK", 5);
 
+        semanticCacheService = new SemanticCacheServiceImpl(embeddingService);
+        ReflectionTestUtils.setField(semanticCacheService, "cacheEnabled", true);
+        ReflectionTestUtils.setField(semanticCacheService, "similarityThreshold", 0.90);
+        ReflectionTestUtils.setField(semanticCacheService, "maxEntries", 100);
+        ReflectionTestUtils.setField(semanticCacheService, "ttlSeconds", 3600L);
+
         RAGPromptBuilderImpl promptBuilder = new RAGPromptBuilderImpl();
 
         TestableRAGGenerationServiceImpl testableGenService = new TestableRAGGenerationServiceImpl(
                 retrievalService,
                 promptBuilder
         );
+        testableGenService.setSemanticCacheService(semanticCacheService);
         ReflectionTestUtils.setField(testableGenService, "geminiApiKey", "test-api-key");
         ReflectionTestUtils.setField(testableGenService, "generationModel", "gemini-1.5-flash");
 
@@ -95,8 +108,11 @@ class RAGEndToEndIntegrationTest {
     }
 
     @Test
-    @DisplayName("E2E RAG TEST 1: Full multi-query, reranking, and compression pipeline produces grounded answer with citations")
-    void testFullRAGPipelineSuccess() {
+    @DisplayName("E2E RAG TEST 1: Full pipeline produces grounded answer, caches response, and subsequent query hits cache")
+    void testFullRAGPipelineAndCacheHit() {
+        when(embeddingService.generateEmbedding("How does AI-Nexus RAG work?"))
+                .thenReturn(List.of(0.1f, 0.9f, 0.4f));
+
         when(queryEnhancementService.enhanceQuery("How does AI-Nexus RAG work?"))
                 .thenReturn(EnhancedQuery.unchanged("How does AI-Nexus RAG work?"));
 
@@ -109,18 +125,29 @@ class RAGEndToEndIntegrationTest {
         ((TestableRAGGenerationServiceImpl) ragGenerationService)
                 .setMockGeminiResponse("AI-Nexus performs vector retrieval and feeds context to Gemini for grounded answers.");
 
-        RAGResponse response = ragGenerationService.generateAnswer("How does AI-Nexus RAG work?", 10L, null, testUser);
+        // First call: Cache MISS -> Normal RAG execution -> Cache STORE
+        RAGResponse response1 = ragGenerationService.generateAnswer("How does AI-Nexus RAG work?", 10L, null, testUser);
 
-        assertNotNull(response);
-        assertEquals("AI-Nexus performs vector retrieval and feeds context to Gemini for grounded answers.", response.answer());
-        assertTrue(response.hasContext());
-        assertEquals(2, response.citations().size());
-        assertEquals("rag_guide.pdf", response.citations().get(0).filename());
+        assertNotNull(response1);
+        assertEquals("AI-Nexus performs vector retrieval and feeds context to Gemini for grounded answers.", response1.answer());
+        assertTrue(response1.hasContext());
+        assertEquals(2, response1.citations().size());
+        assertEquals("rag_guide.pdf", response1.citations().get(0).filename());
+
+        // Second call: Cache HIT -> Immediate response without re-executing retrieval
+        RAGResponse response2 = ragGenerationService.generateAnswer("How does AI-Nexus RAG work?", 10L, null, testUser);
+
+        assertNotNull(response2);
+        assertEquals("AI-Nexus performs vector retrieval and feeds context to Gemini for grounded answers.", response2.answer());
+        verify(multiQueryRetrievalService, times(1)).retrieveMultiQueryResults(any(), any(), any(), any());
     }
 
     @Test
-    @DisplayName("E2E RAG TEST 2: Irrelevant or empty search produces controlled fallback without hallucination")
+    @DisplayName("E2E RAG TEST 2: Irrelevant or empty search produces controlled fallback without hallucination or caching")
     void testFullRAGPipelineNoContextFallback() {
+        when(embeddingService.generateEmbedding("What is the recipe for chocolate cake?"))
+                .thenReturn(List.of(0.9f, 0.1f, 0.1f));
+
         when(queryEnhancementService.enhanceQuery("What is the recipe for chocolate cake?"))
                 .thenReturn(EnhancedQuery.unchanged("What is the recipe for chocolate cake?"));
 
@@ -137,6 +164,9 @@ class RAGEndToEndIntegrationTest {
     @Test
     @DisplayName("E2E RAG TEST 3: Multi-tenant workspace isolation across pipeline")
     void testWorkspaceIsolationAcrossPipeline() {
+        when(embeddingService.generateEmbedding("financial forecast"))
+                .thenReturn(List.of(0.2f, 0.8f, 0.1f));
+
         when(queryEnhancementService.enhanceQuery("financial forecast"))
                 .thenReturn(EnhancedQuery.unchanged("financial forecast"));
 

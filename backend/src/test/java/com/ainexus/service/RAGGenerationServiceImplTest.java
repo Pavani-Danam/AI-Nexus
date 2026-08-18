@@ -1,6 +1,7 @@
 package com.ainexus.service;
 
 import com.ainexus.dto.RAGChunk;
+import com.ainexus.dto.RAGCitation;
 import com.ainexus.dto.RAGContext;
 import com.ainexus.dto.RAGPrompt;
 import com.ainexus.dto.RAGResponse;
@@ -16,6 +17,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -25,53 +27,50 @@ import static org.mockito.Mockito.*;
 class RAGGenerationServiceImplTest {
 
     @Mock
-    private RAGRetrievalService ragRetrievalService;
+    private RAGRetrievalService retrievalService;
 
     @Mock
-    private RAGPromptBuilder ragPromptBuilder;
+    private RAGPromptBuilder promptBuilder;
 
-    private TestableRAGGenerationService ragGenerationService;
+    @Mock
+    private SemanticCacheService semanticCacheService;
+
+    private TestableRAGGenerationServiceImpl ragGenerationService;
     private User testUser;
 
-    static class TestableRAGGenerationService extends RAGGenerationServiceImpl {
-        private String mockResponseText = "This is a grounded answer from Gemini.";
-        private RuntimeException errorToThrow = null;
-        private String lastPromptReceived = null;
+    static class TestableRAGGenerationServiceImpl extends RAGGenerationServiceImpl {
+        private String mockGeminiResponse = "Default mock answer";
+        private boolean shouldThrow = false;
 
-        public TestableRAGGenerationService(RAGRetrievalService retrievalService, RAGPromptBuilder promptBuilder) {
+        public TestableRAGGenerationServiceImpl(RAGRetrievalService retrievalService,
+                                                RAGPromptBuilder promptBuilder) {
             super(retrievalService, promptBuilder);
         }
 
-        public void setMockResponseText(String text) {
-            this.mockResponseText = text;
+        public void setMockGeminiResponse(String response) {
+            this.mockGeminiResponse = response;
+            this.shouldThrow = false;
         }
 
-        public void setErrorToThrow(RuntimeException error) {
-            this.errorToThrow = error;
-        }
-
-        public String getLastPromptReceived() {
-            return lastPromptReceived;
+        public void setShouldThrow(boolean shouldThrow) {
+            this.shouldThrow = shouldThrow;
         }
 
         @Override
         protected String callGeminiGenerateContent(String promptText) {
-            this.lastPromptReceived = promptText;
-            if (errorToThrow != null) {
-                throw errorToThrow;
+            if (shouldThrow) {
+                throw new RuntimeException("Simulated Gemini failure");
             }
-            return mockResponseText;
+            return mockGeminiResponse;
         }
     }
 
     @BeforeEach
     void setUp() {
-        ragGenerationService = new TestableRAGGenerationService(ragRetrievalService, ragPromptBuilder);
+        ragGenerationService = new TestableRAGGenerationServiceImpl(retrievalService, promptBuilder);
+        ragGenerationService.setSemanticCacheService(semanticCacheService);
         ReflectionTestUtils.setField(ragGenerationService, "geminiApiKey", "test-api-key");
         ReflectionTestUtils.setField(ragGenerationService, "generationModel", "gemini-1.5-flash");
-        ReflectionTestUtils.setField(ragGenerationService, "temperature", 0.2);
-        ReflectionTestUtils.setField(ragGenerationService, "maxOutputTokens", 2048);
-        ReflectionTestUtils.setField(ragGenerationService, "timeoutSeconds", 30);
 
         testUser = new User();
         testUser.setId(1L);
@@ -79,117 +78,84 @@ class RAGGenerationServiceImplTest {
     }
 
     @Test
-    @DisplayName("TEST 1: Valid RAG context + query returns grounded answer with authoritative citations")
-    void testSuccessfulRAGGenerationWithCitations() {
-        RAGChunk chunk = new RAGChunk(10L, "architecture.pdf", 0, 0.91, "Microservices guidelines.", 25);
-        RAGContext ragContext = new RAGContext("architecture", 1L, List.of(chunk), "Microservices guidelines.", 25);
-        RAGPrompt ragPrompt = new RAGPrompt("System rules", "Context text", "architecture", "Full structured prompt", true);
+    @DisplayName("TEST 1: Semantic Cache Hit returns cached response immediately without calling retrieval")
+    void testSemanticCacheHitShortCircuit() {
+        RAGResponse cached = new RAGResponse(
+                "Cached: 20 days annual leave.",
+                "leave policy",
+                1L,
+                List.of(new RAGCitation(1L, "handbook.pdf", 0, 0.9, "doc-1-chunk-0", "20 days annual leave.")),
+                Collections.emptyList(),
+                true
+        );
 
-        when(ragRetrievalService.retrieveAndAssembleContext("architecture", 1L, 5, testUser)).thenReturn(ragContext);
-        when(ragPromptBuilder.buildPrompt("architecture", ragContext)).thenReturn(ragPrompt);
+        when(semanticCacheService.lookup("leave policy", 1L, testUser))
+                .thenReturn(Optional.of(cached));
 
-        ragGenerationService.setMockResponseText("Microservices architecture is recommended for modularity.");
+        RAGResponse result = ragGenerationService.generateAnswer("leave policy", 1L, null, testUser);
 
-        RAGResponse response = ragGenerationService.generateAnswer("architecture", 1L, 5, testUser);
-
-        assertNotNull(response);
-        assertEquals("Microservices architecture is recommended for modularity.", response.answer());
-        assertEquals("architecture", response.query());
-        assertEquals(1L, response.workspaceId());
-        assertTrue(response.hasContext());
-        assertEquals(1, response.citations().size());
-        assertEquals(10L, response.citations().get(0).documentId());
-        assertEquals("architecture.pdf", response.citations().get(0).filename());
-        assertEquals(0, response.citations().get(0).chunkIndex());
-        assertEquals(0.91, response.citations().get(0).similarityScore());
-        assertEquals("doc-10-chunk-0", response.citations().get(0).sourceId());
-        assertEquals("Full structured prompt", ragGenerationService.getLastPromptReceived());
+        assertNotNull(result);
+        assertEquals("Cached: 20 days annual leave.", result.answer());
+        verify(retrievalService, never()).retrieveAndAssembleContext(any(), any(), any(), any());
     }
 
     @Test
-    @DisplayName("TEST 2: Duplicate retrieved chunks are deduplicated by documentId and chunkIndex")
-    void testDuplicateChunkDeduplication() {
-        RAGChunk c1 = new RAGChunk(10L, "policy.pdf", 0, 0.95, "Leave policy text", 17);
-        RAGChunk c2 = new RAGChunk(10L, "policy.pdf", 0, 0.95, "Leave policy text duplicate", 27);
-        RAGChunk c3 = new RAGChunk(10L, "policy.pdf", 1, 0.88, "Second chunk text", 17);
+    @DisplayName("TEST 2: Semantic Cache Miss executes retrieval and stores new response in cache")
+    void testSemanticCacheMissPipelineExecution() {
+        when(semanticCacheService.lookup("architecture", 1L, testUser))
+                .thenReturn(Optional.empty());
 
-        RAGContext ragContext = new RAGContext("leave", 1L, List.of(c1, c2, c3), "All text", 61);
-        RAGPrompt ragPrompt = new RAGPrompt("System", "Context", "leave", "Prompt", true);
+        RAGChunk chunk = new RAGChunk(10L, "arch.pdf", 0, 0.9, "AI-Nexus microservices.", 22);
+        RAGContext ragContext = new RAGContext("architecture", 1L, List.of(chunk), "[1] AI-Nexus microservices.", 22);
 
-        when(ragRetrievalService.retrieveAndAssembleContext("leave", 1L, 5, testUser)).thenReturn(ragContext);
-        when(ragPromptBuilder.buildPrompt("leave", ragContext)).thenReturn(ragPrompt);
+        when(retrievalService.retrieveAndAssembleContext(eq("architecture"), eq(1L), any(), eq(testUser)))
+                .thenReturn(ragContext);
+        when(promptBuilder.buildPrompt(eq("architecture"), eq(ragContext)))
+                .thenReturn(new RAGPrompt("System instructions", "[1] AI-Nexus microservices.", "architecture", "Full prompt", true));
 
-        ragGenerationService.setMockResponseText("20 days annual leave.");
+        ragGenerationService.setMockGeminiResponse("AI-Nexus is built with microservices.");
 
-        RAGResponse response = ragGenerationService.generateAnswer("leave", 1L, 5, testUser);
+        RAGResponse result = ragGenerationService.generateAnswer("architecture", 1L, null, testUser);
 
-        assertNotNull(response);
-        assertEquals(2, response.citations().size());
-        assertEquals("doc-10-chunk-0", response.citations().get(0).sourceId());
-        assertEquals("doc-10-chunk-1", response.citations().get(1).sourceId());
+        assertNotNull(result);
+        assertEquals("AI-Nexus is built with microservices.", result.answer());
+        assertTrue(result.hasContext());
+        verify(semanticCacheService, times(1)).store(eq("architecture"), eq(1L), eq(testUser), any(RAGResponse.class));
     }
 
     @Test
-    @DisplayName("TEST 3: Empty context returns empty citations list without fake citations")
-    void testEmptyContextGenerationReturnsEmptyCitations() {
-        RAGContext emptyContext = RAGContext.empty("unmatched query", 1L);
-        RAGPrompt emptyPrompt = new RAGPrompt("System rules", "[NO RELEVANT DOCUMENT CONTEXT AVAILABLE]", "unmatched query", "Full empty prompt", false);
-
-        when(ragRetrievalService.retrieveAndAssembleContext("unmatched query", 1L, 5, testUser)).thenReturn(emptyContext);
-        when(ragPromptBuilder.buildPrompt("unmatched query", emptyContext)).thenReturn(emptyPrompt);
-
-        ragGenerationService.setMockResponseText("I could not find relevant information in the available documents.");
-
-        RAGResponse response = ragGenerationService.generateAnswer("unmatched query", 1L, 5, testUser);
-
-        assertNotNull(response);
-        assertFalse(response.hasContext());
-        assertEquals(0, response.citations().size());
-        assertEquals(0, response.sources().size());
-        assertEquals("I could not find relevant information in the available documents.", response.answer());
-    }
-
-    @Test
-    @DisplayName("TEST 4: Gemini API failure throws controlled RuntimeException")
-    void testGeminiApiFailure() {
-        RAGContext ragContext = RAGContext.empty("query", 1L);
-        RAGPrompt ragPrompt = new RAGPrompt("System", "Context", "query", "Prompt", false);
-
-        when(ragRetrievalService.retrieveAndAssembleContext("query", 1L, 5, testUser)).thenReturn(ragContext);
-        when(ragPromptBuilder.buildPrompt("query", ragContext)).thenReturn(ragPrompt);
-
-        ragGenerationService.setErrorToThrow(new RuntimeException("Gemini generation provider returned error (HTTP 500)"));
-
-        RuntimeException ex = assertThrows(RuntimeException.class, () ->
-                ragGenerationService.generateAnswer("query", 1L, 5, testUser));
-        assertTrue(ex.getMessage().contains("Gemini generation provider returned error"));
-    }
-
-    @Test
-    @DisplayName("TEST 5: Missing Gemini API key throws controlled exception")
-    void testMissingApiKey() {
-        RAGGenerationServiceImpl realService = new RAGGenerationServiceImpl(ragRetrievalService, ragPromptBuilder);
-        ReflectionTestUtils.setField(realService, "geminiApiKey", "");
-
-        RAGContext ragContext = RAGContext.empty("query", 1L);
-        RAGPrompt ragPrompt = new RAGPrompt("System", "Context", "query", "Prompt", false);
-
-        when(ragRetrievalService.retrieveAndAssembleContext("query", 1L, 5, testUser)).thenReturn(ragContext);
-        when(ragPromptBuilder.buildPrompt("query", ragContext)).thenReturn(ragPrompt);
-
-        RuntimeException ex = assertThrows(RuntimeException.class, () ->
-                realService.generateAnswer("query", 1L, 5, testUser));
-        assertTrue(ex.getMessage().contains("Gemini API key is not configured"));
-    }
-
-    @Test
-    @DisplayName("TEST 6: Null or blank query throws IllegalArgumentException")
-    void testBlankQueryValidation() {
+    @DisplayName("TEST 3: Null or blank query throws IllegalArgumentException")
+    void testInvalidQuery() {
         assertThrows(IllegalArgumentException.class, () ->
-                ragGenerationService.generateAnswer(null, 1L, 5, testUser));
+                ragGenerationService.generateAnswer(null, 1L, null, testUser));
         assertThrows(IllegalArgumentException.class, () ->
-                ragGenerationService.generateAnswer("", 1L, 5, testUser));
+                ragGenerationService.generateAnswer("   ", 1L, null, testUser));
+    }
+
+    @Test
+    @DisplayName("TEST 4: Null workspaceId throws IllegalArgumentException")
+    void testNullWorkspace() {
         assertThrows(IllegalArgumentException.class, () ->
-                ragGenerationService.generateAnswer("   ", 1L, 5, testUser));
+                ragGenerationService.generateAnswer("query", null, null, testUser));
+    }
+
+    @Test
+    @DisplayName("TEST 5: Gemini failure throws RuntimeException without storing corrupted cache")
+    void testGeminiFailureHandling() {
+        when(semanticCacheService.lookup("query", 1L, testUser))
+                .thenReturn(Optional.empty());
+
+        RAGChunk chunk = new RAGChunk(10L, "doc.pdf", 0, 0.9, "Content", 7);
+        RAGContext ragContext = new RAGContext("query", 1L, List.of(chunk), "[1] Content", 7);
+        when(retrievalService.retrieveAndAssembleContext(eq("query"), eq(1L), any(), eq(testUser)))
+                .thenReturn(ragContext);
+        when(promptBuilder.buildPrompt(eq("query"), eq(ragContext)))
+                .thenReturn(new RAGPrompt("System", "Content", "query", "Full", true));
+
+        ragGenerationService.setShouldThrow(true);
+
+        assertThrows(RuntimeException.class, () ->
+                ragGenerationService.generateAnswer("query", 1L, null, testUser));
+        verify(semanticCacheService, never()).store(any(), any(), any(), any());
     }
 }

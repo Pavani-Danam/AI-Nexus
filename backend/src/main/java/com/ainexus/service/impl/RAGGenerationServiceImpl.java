@@ -9,10 +9,12 @@ import com.ainexus.entity.User;
 import com.ainexus.service.RAGGenerationService;
 import com.ainexus.service.RAGPromptBuilder;
 import com.ainexus.service.RAGRetrievalService;
+import com.ainexus.service.SemanticCacheService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -32,6 +34,7 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
     private final RAGRetrievalService ragRetrievalService;
     private final RAGPromptBuilder ragPromptBuilder;
     private final ObjectMapper objectMapper;
+    private SemanticCacheService semanticCacheService;
 
     @Value("${app.ai.gemini.api-key:}")
     private String geminiApiKey;
@@ -54,6 +57,11 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
         this.objectMapper = new ObjectMapper();
     }
 
+    @Autowired(required = false)
+    public void setSemanticCacheService(SemanticCacheService semanticCacheService) {
+        this.semanticCacheService = semanticCacheService;
+    }
+
     @Override
     public RAGResponse generateAnswer(String query, Long workspaceId, Integer topK, User authenticatedUser) {
         if (query == null || query.trim().isEmpty()) {
@@ -63,31 +71,49 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
             throw new IllegalArgumentException("Workspace ID must not be null.");
         }
 
-        logger.info("Starting RAG generation for workspace id: {} with query: '{}'", workspaceId, query.trim());
+        String cleanQuery = query.trim();
 
-        // 1. Retrieve authorized context
-        RAGContext ragContext = ragRetrievalService.retrieveAndAssembleContext(query.trim(), workspaceId, topK, authenticatedUser);
+        // 1. Semantic Cache Lookup
+        if (semanticCacheService != null) {
+            Optional<RAGResponse> cachedResponse = semanticCacheService.lookup(cleanQuery, workspaceId, authenticatedUser);
+            if (cachedResponse.isPresent()) {
+                logger.info("Returning cached response for workspace id: {} and query: '{}'", workspaceId, cleanQuery);
+                return cachedResponse.get();
+            }
+        }
 
-        // 2. Build structured RAG prompt
-        RAGPrompt ragPrompt = ragPromptBuilder.buildPrompt(query.trim(), ragContext);
+        logger.info("Starting RAG generation for workspace id: {} with query: '{}'", workspaceId, cleanQuery);
 
-        // 3. Call Gemini model
+        // 2. Retrieve authorized context
+        RAGContext ragContext = ragRetrievalService.retrieveAndAssembleContext(cleanQuery, workspaceId, topK, authenticatedUser);
+
+        // 3. Build structured RAG prompt
+        RAGPrompt ragPrompt = ragPromptBuilder.buildPrompt(cleanQuery, ragContext);
+
+        // 4. Call Gemini model
         String answer = callGeminiGenerateContent(ragPrompt.fullPrompt());
 
-        // 4. Build authoritative citations from retrieved chunks (deduplicated by documentId + chunkIndex)
+        // 5. Build authoritative citations from retrieved chunks (deduplicated by documentId + chunkIndex)
         List<RAGCitation> citations = buildAuthoritativeCitations(ragContext.chunks());
 
         logger.info("Successfully completed RAG generation for workspace id: {} (chunks used: {}, citations: {})",
                 workspaceId, ragContext.chunks().size(), citations.size());
 
-        return new RAGResponse(
+        RAGResponse response = new RAGResponse(
                 answer,
-                query.trim(),
+                cleanQuery,
                 workspaceId,
                 citations,
                 ragContext.chunks(),
                 ragPrompt.hasContext()
         );
+
+        // 6. Store successful response in semantic cache
+        if (semanticCacheService != null) {
+            semanticCacheService.store(cleanQuery, workspaceId, authenticatedUser, response);
+        }
+
+        return response;
     }
 
     private List<RAGCitation> buildAuthoritativeCitations(List<RAGChunk> chunks) {
