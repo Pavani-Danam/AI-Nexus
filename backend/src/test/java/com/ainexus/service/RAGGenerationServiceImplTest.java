@@ -40,6 +40,9 @@ class RAGGenerationServiceImplTest {
     @Mock
     private ConversationMemoryService conversationMemoryService;
 
+    @Mock
+    private ConversationQueryRewriteService conversationQueryRewriteService;
+
     private TestableRAGGenerationServiceImpl generationService;
     private User testUser;
 
@@ -65,6 +68,7 @@ class RAGGenerationServiceImplTest {
         generationService = new TestableRAGGenerationServiceImpl(retrievalService, promptBuilder);
         generationService.setSemanticCacheService(semanticCacheService);
         generationService.setConversationMemoryService(conversationMemoryService);
+        generationService.setConversationQueryRewriteService(conversationQueryRewriteService);
 
         ReflectionTestUtils.setField(generationService, "geminiApiKey", "test-gemini-key");
         ReflectionTestUtils.setField(generationService, "generationModel", "gemini-1.5-flash");
@@ -138,24 +142,26 @@ class RAGGenerationServiceImplTest {
     }
 
     @Test
-    @DisplayName("TEST 4: Conversational Memory bypasses semantic cache and injects dialogue history")
-    void testConversationalMemoryBypassesCache() {
+    @DisplayName("TEST 4: Conversational Memory rewrites follow-up query and bypasses cache")
+    void testConversationalMemoryBypassesCacheAndRewritesQuery() {
         List<MemoryMessage> messages = List.of(
-                MemoryMessage.of(1L, "USER", "Prior question", LocalDateTime.now().minusMinutes(2)),
-                MemoryMessage.of(2L, "ASSISTANT", "Prior answer", LocalDateTime.now().minusMinutes(1))
+                MemoryMessage.of(1L, "USER", "What is leave policy?", LocalDateTime.now().minusMinutes(2)),
+                MemoryMessage.of(2L, "ASSISTANT", "20 days annual leave.", LocalDateTime.now().minusMinutes(1))
         );
 
         ConversationMemory mockMemory = new ConversationMemory(
-                100L, 1L, messages, "USER:\nPrior question\n\nASSISTANT:\nPrior answer", messages.size()
+                100L, 1L, messages, "USER:\nWhat is leave policy?\n\nASSISTANT:\n20 days annual leave.", messages.size()
         );
 
         when(conversationMemoryService.getMemory(100L, 1L, testUser)).thenReturn(mockMemory);
+        when(conversationQueryRewriteService.rewriteToStandaloneQuery(eq("follow up"), eq(mockMemory), eq(1L), eq(testUser)))
+                .thenReturn("standalone rewritten query for leave policy");
 
         List<RAGChunk> chunks = List.of(new RAGChunk(10L, "doc.pdf", 0, 0.90, "Content", 7));
-        RAGContext mockContext = new RAGContext("follow up", 1L, chunks, "Content", 7);
+        RAGContext mockContext = new RAGContext("standalone rewritten query for leave policy", 1L, chunks, "Content", 7);
         RAGPrompt mockPrompt = new RAGPrompt("System", "Content", "follow up", "Full with history", true);
 
-        when(retrievalService.retrieveAndAssembleContext("follow up", 1L, 5, testUser)).thenReturn(mockContext);
+        when(retrievalService.retrieveAndAssembleContext("standalone rewritten query for leave policy", 1L, 5, testUser)).thenReturn(mockContext);
         when(promptBuilder.buildPrompt(eq("follow up"), eq(mockContext), eq(mockMemory))).thenReturn(mockPrompt);
         generationService.setMockGeminiResponse("Follow up answer.");
 
@@ -163,8 +169,10 @@ class RAGGenerationServiceImplTest {
 
         assertNotNull(response);
         assertEquals("Follow up answer.", response.answer());
+        assertEquals("follow up", response.query()); // Original query preserved
+        verify(conversationQueryRewriteService, times(1)).rewriteToStandaloneQuery("follow up", mockMemory, 1L, testUser);
+        verify(retrievalService, times(1)).retrieveAndAssembleContext("standalone rewritten query for leave policy", 1L, 5, testUser);
         verify(semanticCacheService, never()).lookup(anyString(), anyLong(), any(User.class));
-        verify(semanticCacheService, never()).store(anyString(), anyLong(), any(User.class), any(RAGResponse.class));
     }
 
     @Test

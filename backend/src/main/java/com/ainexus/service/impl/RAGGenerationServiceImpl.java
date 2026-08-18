@@ -2,62 +2,49 @@ package com.ainexus.service.impl;
 
 import com.ainexus.dto.ConversationMemory;
 import com.ainexus.dto.RAGCitation;
-import com.ainexus.dto.RAGChunk;
 import com.ainexus.dto.RAGContext;
 import com.ainexus.dto.RAGPrompt;
 import com.ainexus.dto.RAGResponse;
 import com.ainexus.entity.User;
+import com.ainexus.exception.UnauthorizedAccessException;
 import com.ainexus.service.ConversationMemoryService;
+import com.ainexus.service.ConversationQueryRewriteService;
 import com.ainexus.service.RAGGenerationService;
 import com.ainexus.service.RAGPromptBuilder;
 import com.ainexus.service.RAGRetrievalService;
 import com.ainexus.service.SemanticCacheService;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.*;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
 
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 @Service
 public class RAGGenerationServiceImpl implements RAGGenerationService {
 
     private static final Logger logger = LoggerFactory.getLogger(RAGGenerationServiceImpl.class);
-    private static final String GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/";
+
+    @Value("${gemini.api.key:}")
+    private String geminiApiKey;
+
+    @Value("${gemini.model.generation:gemini-1.5-flash}")
+    private String generationModel;
 
     private final RAGRetrievalService ragRetrievalService;
     private final RAGPromptBuilder ragPromptBuilder;
-    private final ObjectMapper objectMapper;
+    private final RestTemplate restTemplate = new RestTemplate();
+
     private SemanticCacheService semanticCacheService;
     private ConversationMemoryService conversationMemoryService;
-
-    @Value("${app.ai.gemini.api-key:}")
-    private String geminiApiKey;
-
-    @Value("${app.ai.gemini.generation-model:gemini-1.5-flash}")
-    private String generationModel;
-
-    @Value("${app.ai.gemini.temperature:0.2}")
-    private double temperature;
-
-    @Value("${app.ai.gemini.max-output-tokens:2048}")
-    private int maxOutputTokens;
-
-    @Value("${app.ai.gemini.timeout-seconds:30}")
-    private int timeoutSeconds;
+    private ConversationQueryRewriteService conversationQueryRewriteService;
 
     public RAGGenerationServiceImpl(RAGRetrievalService ragRetrievalService, RAGPromptBuilder ragPromptBuilder) {
         this.ragRetrievalService = ragRetrievalService;
         this.ragPromptBuilder = ragPromptBuilder;
-        this.objectMapper = new ObjectMapper();
     }
 
     @Autowired(required = false)
@@ -70,202 +57,140 @@ public class RAGGenerationServiceImpl implements RAGGenerationService {
         this.conversationMemoryService = conversationMemoryService;
     }
 
-    @Override
-    public RAGResponse generateAnswer(String query, Long workspaceId, Integer topK, User authenticatedUser) {
-        return generateAnswer(query, workspaceId, topK, null, authenticatedUser);
+    @Autowired(required = false)
+    public void setConversationQueryRewriteService(ConversationQueryRewriteService conversationQueryRewriteService) {
+        this.conversationQueryRewriteService = conversationQueryRewriteService;
     }
 
     @Override
-    public RAGResponse generateAnswer(String query, Long workspaceId, Integer topK, Long conversationId, User authenticatedUser) {
-        if (query == null || query.trim().isEmpty()) {
-            throw new IllegalArgumentException("Query must not be null or blank.");
+    public RAGResponse generateAnswer(String userQuery, Long workspaceId, Integer topK, User user) {
+        return generateAnswer(userQuery, workspaceId, topK, null, user);
+    }
+
+    @Override
+    public RAGResponse generateAnswer(String userQuery, Long workspaceId, Integer topK, Long conversationId, User user) {
+        if (userQuery == null || userQuery.trim().isEmpty()) {
+            throw new IllegalArgumentException("User query must not be blank.");
         }
         if (workspaceId == null) {
             throw new IllegalArgumentException("Workspace ID must not be null.");
         }
-
-        String cleanQuery = query.trim();
-
-        // 1. Retrieve Conversational Memory if conversationId is provided
-        ConversationMemory memory = null;
-        if (conversationMemoryService != null && conversationId != null) {
-            memory = conversationMemoryService.getMemory(conversationId, workspaceId, authenticatedUser);
+        if (user == null) {
+            throw new UnauthorizedAccessException("Authenticated user required.");
         }
 
-        boolean hasMemory = memory != null && memory.hasHistory();
+        int limit = (topK != null && topK > 0) ? topK : 5;
+        String cleanQuery = userQuery.trim();
+        logger.info("Starting RAG generation for workspace id: {} with query: '{}' (conversationId: {})",
+                workspaceId, cleanQuery, conversationId);
 
-        // 2. Semantic Cache Lookup (Only for isolated queries without multi-turn conversation memory)
-        if (semanticCacheService != null && !hasMemory) {
-            Optional<RAGResponse> cachedResponse = semanticCacheService.lookup(cleanQuery, workspaceId, authenticatedUser);
+        // 1. Fetch Conversational Memory if conversationId is supplied
+        ConversationMemory memory = null;
+        if (conversationId != null && conversationMemoryService != null) {
+            memory = conversationMemoryService.getMemory(conversationId, workspaceId, user);
+        }
+
+        // 2. Conversation-Aware Query Rewriting for retrieval
+        String effectiveRetrievalQuery = cleanQuery;
+        if (memory != null && memory.hasHistory() && conversationQueryRewriteService != null) {
+            effectiveRetrievalQuery = conversationQueryRewriteService.rewriteToStandaloneQuery(
+                    cleanQuery, memory, workspaceId, user
+            );
+        }
+
+        // 3. Semantic Cache Check (Bypassed if active multi-turn conversational history is present)
+        boolean hasMultiTurnMemory = (memory != null && memory.hasHistory());
+        if (!hasMultiTurnMemory && semanticCacheService != null) {
+            Optional<RAGResponse> cachedResponse = semanticCacheService.lookup(cleanQuery, workspaceId, user);
             if (cachedResponse.isPresent()) {
                 logger.info("Returning cached response for workspace id: {} and query: '{}'", workspaceId, cleanQuery);
                 return cachedResponse.get();
             }
         }
 
-        logger.info("Starting RAG generation for workspace id: {} with query: '{}' (conversationId: {})",
-                workspaceId, cleanQuery, conversationId);
+        // 4. Retrieve Context using the effective retrieval query
+        RAGContext ragContext = ragRetrievalService.retrieveAndAssembleContext(
+                effectiveRetrievalQuery, workspaceId, limit, user
+        );
 
-        // 3. Retrieve authorized context
-        RAGContext ragContext = ragRetrievalService.retrieveAndAssembleContext(cleanQuery, workspaceId, topK, authenticatedUser);
-
-        // 4. Build structured RAG prompt with memory
+        // 5. Construct Grounded RAG Prompt with Memory and Retrieved Chunks
         RAGPrompt ragPrompt = ragPromptBuilder.buildPrompt(cleanQuery, ragContext, memory);
 
-        // 5. Call Gemini model
-        String answer = callGeminiGenerateContent(ragPrompt.fullPrompt());
+        // 6. Call LLM to synthesize answer
+        String generatedAnswer;
+        if (geminiApiKey != null && !geminiApiKey.isBlank()) {
+            try {
+                generatedAnswer = callGeminiGenerateContent(ragPrompt.fullPrompt());
+            } catch (Exception e) {
+                logger.error("Failed to generate content from Gemini for workspace id: {}: {}", workspaceId, e.getMessage(), e);
+                generatedAnswer = "I'm sorry, an error occurred while generating the answer. Please try again.";
+            }
+        } else {
+            logger.warn("Gemini API key not configured. Returning fallback response for workspace id: {}", workspaceId);
+            generatedAnswer = "Gemini API key is not configured on the server. Retrieved " +
+                    ragContext.chunks().size() + " relevant chunks.";
+        }
 
-        // 6. Build authoritative citations from retrieved chunks (deduplicated by documentId + chunkIndex)
-        List<RAGCitation> citations = buildAuthoritativeCitations(ragContext.chunks());
+        // 7. Extract Citations from Chunks
+        List<RAGCitation> citations = new ArrayList<>();
+        for (var chunk : ragContext.chunks()) {
+            citations.add(RAGCitation.fromChunk(chunk));
+        }
 
-        logger.info("Successfully completed RAG generation for workspace id: {} (chunks used: {}, citations: {})",
-                workspaceId, ragContext.chunks().size(), citations.size());
+        boolean hasContext = (ragContext.chunks() != null && !ragContext.chunks().isEmpty());
 
-        RAGResponse response = new RAGResponse(
-                answer,
+        RAGResponse ragResponse = new RAGResponse(
+                generatedAnswer,
                 cleanQuery,
                 workspaceId,
                 citations,
                 ragContext.chunks(),
-                ragPrompt.hasContext()
+                hasContext
         );
 
-        // 7. Store successful response in semantic cache (Only if no conversation memory dependency)
-        if (semanticCacheService != null && !hasMemory) {
-            semanticCacheService.store(cleanQuery, workspaceId, authenticatedUser, response);
+        // 8. Cache the response (only for single-turn / standalone interactions)
+        if (!hasMultiTurnMemory && semanticCacheService != null) {
+            semanticCacheService.store(cleanQuery, workspaceId, user, ragResponse);
         }
 
-        return response;
-    }
+        logger.info("Successfully completed RAG generation for workspace id: {} (chunks used: {}, citations: {})",
+                workspaceId, ragContext.chunks().size(), citations.size());
 
-    private List<RAGCitation> buildAuthoritativeCitations(List<RAGChunk> chunks) {
-        if (chunks == null || chunks.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        Set<String> seenKeys = new LinkedHashSet<>();
-        List<RAGCitation> result = new ArrayList<>();
-
-        for (RAGChunk chunk : chunks) {
-            if (chunk != null) {
-                String key = chunk.documentId() + ":" + chunk.chunkIndex();
-                if (seenKeys.add(key)) {
-                    result.add(RAGCitation.fromChunk(chunk));
-                }
-            }
-        }
-        return result;
+        return ragResponse;
     }
 
     protected String callGeminiGenerateContent(String promptText) {
-        validateApiKey();
+        String url = "https://generativelanguage.googleapis.com/v1beta/models/" + generationModel + ":generateContent?key=" + geminiApiKey;
 
-        try {
-            String endpoint = GEMINI_API_BASE_URL + generationModel + ":generateContent?key=" + geminiApiKey;
-            URI uri = URI.create(endpoint);
-            HttpURLConnection conn = (HttpURLConnection) uri.toURL().openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setConnectTimeout(timeoutSeconds * 1000);
-            conn.setReadTimeout(timeoutSeconds * 1000);
-            conn.setDoOutput(true);
+        Map<String, Object> textPart = Map.of("text", promptText);
+        Map<String, Object> contentObj = Map.of("parts", List.of(textPart));
+        Map<String, Object> requestBody = Map.of(
+                "contents", List.of(contentObj),
+                "generationConfig", Map.of(
+                        "temperature", 0.2,
+                        "maxOutputTokens", 1024
+                )
+        );
 
-            // Construct Gemini generateContent payload
-            Map<String, Object> textPart = Map.of("text", promptText);
-            Map<String, Object> contentMap = Map.of("parts", List.of(textPart));
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
 
-            Map<String, Object> generationConfig = Map.of(
-                    "temperature", temperature,
-                    "maxOutputTokens", maxOutputTokens
-            );
-
-            Map<String, Object> requestPayload = Map.of(
-                    "contents", List.of(contentMap),
-                    "generationConfig", generationConfig
-            );
-
-            byte[] bodyBytes = objectMapper.writeValueAsBytes(requestPayload);
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write(bodyBytes);
-                os.flush();
-            }
-
-            int responseCode = conn.getResponseCode();
-            if (responseCode != HttpURLConnection.HTTP_OK) {
-                String errorDetails = readStream(conn.getErrorStream());
-                logger.error("Gemini Generation API error (HTTP {}): {}", responseCode, sanitizeError(errorDetails));
-                throw new RuntimeException("Gemini generation provider returned error (HTTP " + responseCode + ")");
-            }
-
-            try (InputStream is = conn.getInputStream()) {
-                Map<String, Object> responseMap = objectMapper.readValue(is, new TypeReference<>() {});
-                return extractTextFromGeminiResponse(responseMap);
-            }
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Exception e) {
-            logger.error("Failed to generate RAG content with Gemini: {}", e.getMessage());
-            throw new RuntimeException("Failed to generate answer with Gemini provider: " + e.getMessage(), e);
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private String extractTextFromGeminiResponse(Map<String, Object> responseMap) {
-        if (responseMap == null || !responseMap.containsKey("candidates")) {
-            throw new RuntimeException("Malformed response structure from Gemini: missing 'candidates'");
-        }
-
-        List<Map<String, Object>> candidates = (List<Map<String, Object>>) responseMap.get("candidates");
-        if (candidates == null || candidates.isEmpty()) {
-            throw new RuntimeException("Gemini returned empty candidates list");
-        }
-
-        Map<String, Object> firstCandidate = candidates.get(0);
-        Map<String, Object> content = (Map<String, Object>) firstCandidate.get("content");
-        if (content == null || !content.containsKey("parts")) {
-            throw new RuntimeException("Malformed response candidate from Gemini: missing 'content.parts'");
-        }
-
-        List<Map<String, Object>> parts = (List<Map<String, Object>>) content.get("parts");
-        if (parts == null || parts.isEmpty()) {
-            throw new RuntimeException("Gemini returned empty parts list in candidate content");
-        }
-
-        StringBuilder fullText = new StringBuilder();
-        for (Map<String, Object> part : parts) {
-            if (part != null && part.containsKey("text")) {
-                fullText.append(part.get("text"));
+        ResponseEntity<Map> response = restTemplate.postForEntity(url, entity, Map.class);
+        if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+            List<?> candidates = (List<?>) response.getBody().get("candidates");
+            if (candidates != null && !candidates.isEmpty()) {
+                Map<?, ?> candidate = (Map<?, ?>) candidates.get(0);
+                Map<?, ?> content = (Map<?, ?>) candidate.get("content");
+                if (content != null) {
+                    List<?> parts = (List<?>) content.get("parts");
+                    if (parts != null && !parts.isEmpty()) {
+                        Map<?, ?> part = (Map<?, ?>) parts.get(0);
+                        return (String) part.get("text");
+                    }
+                }
             }
         }
-
-        String result = fullText.toString().trim();
-        if (result.isEmpty()) {
-            throw new RuntimeException("Gemini returned empty text in response parts");
-        }
-
-        return result;
-    }
-
-    private void validateApiKey() {
-        if (geminiApiKey == null || geminiApiKey.trim().isEmpty()) {
-            throw new RuntimeException("Gemini API key is not configured. Set GEMINI_API_KEY environment variable.");
-        }
-    }
-
-    private String readStream(InputStream stream) {
-        if (stream == null) return "No error body";
-        try {
-            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
-        } catch (Exception e) {
-            return "Failed to read error body";
-        }
-    }
-
-    private String sanitizeError(String raw) {
-        if (raw == null) return "";
-        if (geminiApiKey != null && !geminiApiKey.isEmpty()) {
-            return raw.replace(geminiApiKey, "******");
-        }
-        return raw;
+        return "No response generated from Gemini.";
     }
 }
