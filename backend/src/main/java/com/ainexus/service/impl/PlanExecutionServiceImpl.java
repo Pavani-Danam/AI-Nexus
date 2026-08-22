@@ -6,6 +6,7 @@ import com.ainexus.entity.User;
 import com.ainexus.exception.UnauthorizedAccessException;
 import com.ainexus.repository.WorkspaceRepository;
 import com.ainexus.service.AgentPlanningService;
+import com.ainexus.service.AgentRetryPolicy;
 import com.ainexus.service.PlanExecutionService;
 import com.ainexus.service.RAGGenerationService;
 import jakarta.annotation.PreDestroy;
@@ -37,7 +38,17 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
     @Value("${app.agent.execution.task-timeout-seconds:30}")
     private int taskTimeoutSeconds = 30;
 
+    @Value("${app.agent.retry.max-attempts:3}")
+    private int maxRetryAttempts = 3;
+
+    @Value("${app.agent.retry.initial-delay-ms:50}")
+    private long initialRetryDelayMs = 50L;
+
+    @Value("${app.agent.retry.max-delay-ms:1000}")
+    private long maxRetryDelayMs = 1000L;
+
     private final ExecutorService executorService;
+    private AgentRetryPolicy retryPolicy;
 
     @Autowired
     public PlanExecutionServiceImpl(
@@ -54,6 +65,7 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
         this.knowledgeAgent = knowledgeAgent;
         this.ragGenerationService = ragGenerationService;
         this.executorService = Executors.newFixedThreadPool(Math.max(2, Runtime.getRuntime().availableProcessors()));
+        this.retryPolicy = new AgentRetryPolicy(3, 50L, 1000L);
     }
 
     public void setMaxConcurrency(int maxConcurrency) {
@@ -62,6 +74,17 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
 
     public void setTaskTimeoutSeconds(int taskTimeoutSeconds) {
         this.taskTimeoutSeconds = taskTimeoutSeconds;
+    }
+
+    public void setRetryPolicy(AgentRetryPolicy retryPolicy) {
+        this.retryPolicy = retryPolicy;
+    }
+
+    public void configureRetry(int maxAttempts, long initialDelayMs, long maxDelayMs) {
+        this.maxRetryAttempts = maxAttempts;
+        this.initialRetryDelayMs = initialDelayMs;
+        this.maxRetryDelayMs = maxDelayMs;
+        this.retryPolicy = new AgentRetryPolicy(maxAttempts, initialDelayMs, maxDelayMs);
     }
 
     @PreDestroy
@@ -111,7 +134,7 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
         }
 
         String executionId = "exec-" + UUID.randomUUID().toString().substring(0, 8);
-        logger.info("Starting parallel execution {} for plan {}", executionId, plan.planId());
+        logger.info("Starting execution {} for plan {}", executionId, plan.planId());
 
         ConcurrentMap<String, String> outputsByTaskId = new ConcurrentHashMap<>();
         ConcurrentMap<String, AgentTaskStatus> taskStatusMap = new ConcurrentHashMap<>();
@@ -172,7 +195,7 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
                 break;
             }
 
-            // Execute ready tasks in parallel
+            // Execute ready tasks in parallel with retry support
             List<CompletableFuture<Void>> futures = new ArrayList<>();
 
             for (AgentTask task : readyTasks) {
@@ -188,15 +211,20 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
                     try {
                         concurrencyLimiter.acquire();
                         taskStatusMap.put(task.id(), AgentTaskStatus.RUNNING);
-                        logger.info("Executing task {} ({}) in thread {}", task.id(), task.type(), Thread.currentThread().getName());
-                        String output = executeSingleTask(task, plan, dependencyContext.toString(), memory, authenticatedUser);
-                        outputsByTaskId.put(task.id(), output);
-                        taskStatusMap.put(task.id(), AgentTaskStatus.COMPLETED);
-                        taskResultsMap.put(task.id(), AgentTaskResult.success(task.id(), task.type(), output));
+                        
+                        AgentTaskResult taskResult = executeTaskWithRetry(task, plan, dependencyContext.toString(), memory, authenticatedUser);
+                        
+                        if (taskResult.status() == AgentTaskStatus.COMPLETED) {
+                            outputsByTaskId.put(task.id(), taskResult.output());
+                            taskStatusMap.put(task.id(), AgentTaskStatus.COMPLETED);
+                        } else {
+                            taskStatusMap.put(task.id(), AgentTaskStatus.FAILED);
+                        }
+                        taskResultsMap.put(task.id(), taskResult);
                     } catch (Exception e) {
-                        logger.error("Task {} failed during execution: {}", task.id(), e.getMessage());
+                        logger.error("Unexpected error executing task {}: {}", task.id(), e.getMessage());
                         taskStatusMap.put(task.id(), AgentTaskStatus.FAILED);
-                        taskResultsMap.put(task.id(), AgentTaskResult.failure(task.id(), task.type(), e.getMessage()));
+                        taskResultsMap.put(task.id(), AgentTaskResult.failure(task.id(), task.type(), e.getMessage(), FailureCategory.PERMANENT_FAILURE, 1));
                     } finally {
                         concurrencyLimiter.release();
                     }
@@ -214,7 +242,7 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
                 for (AgentTask task : readyTasks) {
                     if (taskStatusMap.get(task.id()) == AgentTaskStatus.RUNNING) {
                         taskStatusMap.put(task.id(), AgentTaskStatus.FAILED);
-                        taskResultsMap.put(task.id(), AgentTaskResult.failure(task.id(), task.type(), "Task timed out"));
+                        taskResultsMap.put(task.id(), AgentTaskResult.failure(task.id(), task.type(), "Task timed out", FailureCategory.TIMEOUT_FAILURE, 1));
                     }
                 }
             } catch (Exception e) {
@@ -265,6 +293,51 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
                 orderedResults,
                 orderedOutputs
         );
+    }
+
+    private AgentTaskResult executeTaskWithRetry(AgentTask task, AgentPlan plan, String dependencyContext, ConversationMemory memory, User authenticatedUser) {
+        int attempt = 0;
+        int maxAttempts = retryPolicy != null ? retryPolicy.getMaxAttempts() : maxRetryAttempts;
+        Throwable lastThrowable = null;
+
+        while (attempt < maxAttempts) {
+            attempt++;
+            try {
+                if (attempt > 1) {
+                    long delay = retryPolicy != null ? retryPolicy.calculateDelay(attempt) : 50L;
+                    logger.info("Retrying task {} (attempt {}/{}) after delay of {}ms", task.id(), attempt, maxAttempts, delay);
+                    if (delay > 0) {
+                        Thread.sleep(delay);
+                    }
+                } else {
+                    logger.info("Executing task {} ({}) attempt 1/{}", task.id(), task.type(), maxAttempts);
+                }
+
+                String output = executeSingleTask(task, plan, dependencyContext, memory, authenticatedUser);
+                logger.info("Task {} succeeded on attempt {}", task.id(), attempt);
+                return AgentTaskResult.success(task.id(), task.type(), output, attempt);
+
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                logger.error("Task {} interrupted during retry backoff", task.id());
+                return AgentTaskResult.failure(task.id(), task.type(), "Task interrupted", FailureCategory.TRANSIENT_FAILURE, attempt);
+            } catch (Throwable t) {
+                lastThrowable = t;
+                FailureCategory category = retryPolicy != null ? retryPolicy.classifyException(t) : FailureCategory.TRANSIENT_FAILURE;
+                logger.warn("Task {} attempt {} failed with category: {} (reason: {})", task.id(), attempt, category, t.getMessage());
+
+                // Permanent/authorization/validation failures must NOT be retried
+                if (!category.isRetryable()) {
+                    logger.warn("Task {} failure category {} is not retryable. Aborting attempts immediately.", task.id(), category);
+                    return AgentTaskResult.failure(task.id(), task.type(), t.getMessage(), category, attempt);
+                }
+            }
+        }
+
+        FailureCategory finalCategory = retryPolicy != null ? retryPolicy.classifyException(lastThrowable) : FailureCategory.TRANSIENT_FAILURE;
+        String errorMsg = lastThrowable != null ? lastThrowable.getMessage() : "Task failed after maximum retry attempts";
+        logger.error("Task {} exhausted all {} attempts. Final status: FAILED ({})", task.id(), maxAttempts, finalCategory);
+        return AgentTaskResult.failure(task.id(), task.type(), errorMsg, finalCategory, attempt);
     }
 
     private String executeSingleTask(AgentTask task, AgentPlan plan, String dependencyContext, ConversationMemory memory, User authenticatedUser) {

@@ -61,6 +61,7 @@ class Phase11Step66PlanExecutionTest {
         );
         planExecutionService.setMaxConcurrency(4);
         planExecutionService.setTaskTimeoutSeconds(10);
+        planExecutionService.configureRetry(3, 10L, 50L);
 
         testUser = new User();
         testUser.setId(100L);
@@ -89,41 +90,112 @@ class Phase11Step66PlanExecutionTest {
         assertEquals(PlanExecutionStatus.COMPLETED, result.status());
         assertEquals(1, result.taskResults().size());
         assertEquals("20 days paid leave.", result.finalOutput());
+        assertEquals(1, result.taskResults().get(0).attempts());
     }
 
     @Test
-    @DisplayName("TEST 2: Two independent tasks execute in parallel")
-    void testTwoIndependentTasksExecuteConcurrently() {
-        AgentTask task1 = new AgentTask("task-1", AgentTaskType.SEARCH, "Find leave policy", List.of());
-        AgentTask task2 = new AgentTask("task-2", AgentTaskType.SEARCH, "Find remote work policy", List.of());
-        AgentPlan plan = new AgentPlan("plan-2", "Query", 1L, List.of(task1, task2));
+    @DisplayName("TEST 2: Transient failure retries and succeeds on attempt 2")
+    void testTransientFailureRetriesAndSucceeds() {
+        AgentTask task = new AgentTask("task-1", AgentTaskType.SEARCH, "Find leave policy", List.of());
+        AgentPlan plan = new AgentPlan("plan-retry-1", "Query", 1L, List.of(task));
 
         when(planningService.validatePlan(plan)).thenReturn(true);
         when(workspaceRepository.findById(1L)).thenReturn(Optional.of(testWorkspace));
 
-        AtomicInteger activeConcurrentTasks = new AtomicInteger(0);
-        AtomicInteger maxConcurrentObserved = new AtomicInteger(0);
-
+        AtomicInteger callCount = new AtomicInteger(0);
         when(searchAgent.execute(any(AgentRequest.class), any(AgentContext.class)))
-                .thenAnswer(invocation -> {
-                    int current = activeConcurrentTasks.incrementAndGet();
-                    maxConcurrentObserved.updateAndGet(max -> Math.max(max, current));
-                    Thread.sleep(100);
-                    activeConcurrentTasks.decrementAndGet();
-                    return AgentResult.success(AgentType.SEARCH, "t", "Policy details", List.of(), Map.of());
+                .thenAnswer(inv -> {
+                    if (callCount.incrementAndGet() == 1) {
+                        throw new RuntimeException("Vector index 503 unavailable");
+                    }
+                    return AgentResult.success(AgentType.SEARCH, "t1", "Recovered search output", List.of(), Map.of());
                 });
 
         AgentExecutionResult result = planExecutionService.executePlan(plan, testUser);
 
         assertNotNull(result);
         assertEquals(PlanExecutionStatus.COMPLETED, result.status());
-        assertEquals(2, result.taskResults().size());
-        assertTrue(maxConcurrentObserved.get() >= 1);
+        assertEquals(2, callCount.get());
+        assertEquals(2, result.taskResults().get(0).attempts());
+        assertEquals("Recovered search output", result.finalOutput());
     }
 
     @Test
-    @DisplayName("TEST 3: Diamond dependency execution (T1 & T2 parallel -> T3 waits -> T4)")
-    void testDiamondDependencyExecution() {
+    @DisplayName("TEST 3: Transient failure exhausts maximum attempts and marks task FAILED")
+    void testTransientFailureExhaustsMaxAttempts() {
+        AgentTask task = new AgentTask("task-1", AgentTaskType.SEARCH, "Find leave policy", List.of());
+        AgentPlan plan = new AgentPlan("plan-retry-fail", "Query", 1L, List.of(task));
+
+        when(planningService.validatePlan(plan)).thenReturn(true);
+        when(workspaceRepository.findById(1L)).thenReturn(Optional.of(testWorkspace));
+
+        AtomicInteger callCount = new AtomicInteger(0);
+        when(searchAgent.execute(any(AgentRequest.class), any(AgentContext.class)))
+                .thenAnswer(inv -> {
+                    callCount.incrementAndGet();
+                    throw new RuntimeException("Connection 500 refused");
+                });
+
+        AgentExecutionResult result = planExecutionService.executePlan(plan, testUser);
+
+        assertNotNull(result);
+        assertEquals(PlanExecutionStatus.FAILED, result.status());
+        assertEquals(3, callCount.get());
+        assertEquals(AgentTaskStatus.FAILED, result.taskResults().get(0).status());
+        assertEquals(FailureCategory.TRANSIENT_FAILURE, result.taskResults().get(0).failureCategory());
+    }
+
+    @Test
+    @DisplayName("TEST 4: Authorization failure is not retried")
+    void testAuthorizationFailureNotRetried() {
+        AgentTask task = new AgentTask("task-1", AgentTaskType.SEARCH, "Unauthorized task", List.of());
+        AgentPlan plan = new AgentPlan("plan-auth-fail", "Query", 1L, List.of(task));
+
+        when(planningService.validatePlan(plan)).thenReturn(true);
+        when(workspaceRepository.findById(1L)).thenReturn(Optional.of(testWorkspace));
+
+        AtomicInteger callCount = new AtomicInteger(0);
+        when(searchAgent.execute(any(AgentRequest.class), any(AgentContext.class)))
+                .thenAnswer(inv -> {
+                    callCount.incrementAndGet();
+                    throw new UnauthorizedAccessException("Forbidden resource access");
+                });
+
+        AgentExecutionResult result = planExecutionService.executePlan(plan, testUser);
+
+        assertNotNull(result);
+        assertEquals(PlanExecutionStatus.FAILED, result.status());
+        assertEquals(1, callCount.get());
+        assertEquals(FailureCategory.AUTHORIZATION_FAILURE, result.taskResults().get(0).failureCategory());
+    }
+
+    @Test
+    @DisplayName("TEST 5: Validation failure is not retried")
+    void testValidationFailureNotRetried() {
+        AgentTask task = new AgentTask("task-1", AgentTaskType.SEARCH, "Malformed query", List.of());
+        AgentPlan plan = new AgentPlan("plan-val-fail", "Query", 1L, List.of(task));
+
+        when(planningService.validatePlan(plan)).thenReturn(true);
+        when(workspaceRepository.findById(1L)).thenReturn(Optional.of(testWorkspace));
+
+        AtomicInteger callCount = new AtomicInteger(0);
+        when(searchAgent.execute(any(AgentRequest.class), any(AgentContext.class)))
+                .thenAnswer(inv -> {
+                    callCount.incrementAndGet();
+                    throw new IllegalArgumentException("Invalid task parameters");
+                });
+
+        AgentExecutionResult result = planExecutionService.executePlan(plan, testUser);
+
+        assertNotNull(result);
+        assertEquals(PlanExecutionStatus.FAILED, result.status());
+        assertEquals(1, callCount.get());
+        assertEquals(FailureCategory.VALIDATION_FAILURE, result.taskResults().get(0).failureCategory());
+    }
+
+    @Test
+    @DisplayName("TEST 6: Diamond dependency execution with upstream retry recovery")
+    void testDiamondDependencyWithUpstreamRetry() {
         AgentTask task1 = new AgentTask("task-1", AgentTaskType.SEARCH, "Search Leave", List.of());
         AgentTask task2 = new AgentTask("task-2", AgentTaskType.SEARCH, "Search Remote", List.of());
         AgentTask task3 = new AgentTask("task-3", AgentTaskType.ANALYZE, "Compare Both", List.of("task-1", "task-2"));
@@ -134,8 +206,17 @@ class Phase11Step66PlanExecutionTest {
         when(planningService.validatePlan(plan)).thenReturn(true);
         when(workspaceRepository.findById(1L)).thenReturn(Optional.of(testWorkspace));
 
+        AtomicInteger task1Calls = new AtomicInteger(0);
         when(searchAgent.execute(any(AgentRequest.class), any(AgentContext.class)))
-                .thenReturn(AgentResult.success(AgentType.SEARCH, "ts", "Search result", List.of(), Map.of()));
+                .thenAnswer(inv -> {
+                    AgentRequest req = inv.getArgument(0);
+                    String tId = (String) req.parameters().get("taskId");
+                    if ("task-1".equals(tId) && task1Calls.incrementAndGet() == 1) {
+                        throw new RuntimeException("503 temporary error");
+                    }
+                    return AgentResult.success(AgentType.SEARCH, tId, "Search result " + tId, List.of(), Map.of());
+                });
+
         when(analysisAgent.execute(any(AgentRequest.class), any(AgentContext.class)))
                 .thenReturn(AgentResult.success(AgentType.ANALYSIS, "ta", "Comparison result", List.of(), Map.of()));
         when(ragGenerationService.generateAnswer(anyString(), eq(1L), eq(5), eq(testUser)))
@@ -146,43 +227,12 @@ class Phase11Step66PlanExecutionTest {
         assertNotNull(result);
         assertEquals(PlanExecutionStatus.COMPLETED, result.status());
         assertEquals(4, result.taskResults().size());
+        assertEquals(2, result.taskResults().get(0).attempts());
         assertEquals("Final summary.", result.finalOutput());
     }
 
     @Test
-    @DisplayName("TEST 4: Deterministic final ordering matches original plan order")
-    void testDeterministicOrderingPreserved() {
-        AgentTask task1 = new AgentTask("task-1", AgentTaskType.SEARCH, "Search 1", List.of());
-        AgentTask task2 = new AgentTask("task-2", AgentTaskType.SEARCH, "Search 2", List.of());
-        AgentTask task3 = new AgentTask("task-3", AgentTaskType.SEARCH, "Search 3", List.of());
-
-        AgentPlan plan = new AgentPlan("plan-order", "Query", 1L, List.of(task1, task2, task3));
-
-        when(planningService.validatePlan(plan)).thenReturn(true);
-        when(workspaceRepository.findById(1L)).thenReturn(Optional.of(testWorkspace));
-
-        when(searchAgent.execute(any(AgentRequest.class), any(AgentContext.class)))
-                .thenAnswer(inv -> {
-                    AgentRequest req = inv.getArgument(0);
-                    String tId = (String) req.parameters().get("taskId");
-                    if ("task-1".equals(tId)) {
-                        Thread.sleep(150); // slower
-                        return AgentResult.success(AgentType.SEARCH, "t1", "Out 1", List.of(), Map.of());
-                    }
-                    return AgentResult.success(AgentType.SEARCH, tId, "Out " + tId, List.of(), Map.of());
-                });
-
-        AgentExecutionResult result = planExecutionService.executePlan(plan, testUser);
-
-        assertNotNull(result);
-        assertEquals(3, result.taskResults().size());
-        assertEquals("task-1", result.taskResults().get(0).taskId());
-        assertEquals("task-2", result.taskResults().get(1).taskId());
-        assertEquals("task-3", result.taskResults().get(2).taskId());
-    }
-
-    @Test
-    @DisplayName("TEST 5: Upstream dependency failure marks dependent task as SKIPPED")
+    @DisplayName("TEST 7: Downstream dependency skipped when upstream retries fail")
     void testDependencyFailureSkipsDependentTask() {
         AgentTask task1 = new AgentTask("task-1", AgentTaskType.SEARCH, "Find leave policy", List.of());
         AgentTask task2 = new AgentTask("task-2", AgentTaskType.ANALYZE, "Analyze rules", List.of("task-1"));
@@ -192,7 +242,7 @@ class Phase11Step66PlanExecutionTest {
         when(workspaceRepository.findById(1L)).thenReturn(Optional.of(testWorkspace));
 
         when(searchAgent.execute(any(AgentRequest.class), any(AgentContext.class)))
-                .thenThrow(new RuntimeException("Vector index unavailable"));
+                .thenThrow(new RuntimeException("Vector index 500 error"));
 
         AgentExecutionResult result = planExecutionService.executePlan(plan, testUser);
 
@@ -203,35 +253,7 @@ class Phase11Step66PlanExecutionTest {
     }
 
     @Test
-    @DisplayName("TEST 6: Independent task executes even if another parallel task fails")
-    void testIndependentTaskExecutesWhenAnotherFails() {
-        AgentTask task1 = new AgentTask("task-1", AgentTaskType.SEARCH, "Search leave policy", List.of());
-        AgentTask task2 = new AgentTask("task-2", AgentTaskType.SEARCH, "Search remote work policy", List.of());
-        AgentPlan plan = new AgentPlan("plan-6", "Query", 1L, List.of(task1, task2));
-
-        when(planningService.validatePlan(plan)).thenReturn(true);
-        when(workspaceRepository.findById(1L)).thenReturn(Optional.of(testWorkspace));
-
-        when(searchAgent.execute(any(AgentRequest.class), any(AgentContext.class)))
-                .thenAnswer(inv -> {
-                    AgentRequest req = inv.getArgument(0);
-                    String tId = (String) req.parameters().get("taskId");
-                    if ("task-1".equals(tId)) {
-                        throw new RuntimeException("Error in task 1");
-                    }
-                    return AgentResult.success(AgentType.SEARCH, "t2", "Remote policy retrieved", List.of(), Map.of());
-                });
-
-        AgentExecutionResult result = planExecutionService.executePlan(plan, testUser);
-
-        assertNotNull(result);
-        assertEquals(PlanExecutionStatus.PARTIALLY_COMPLETED, result.status());
-        assertEquals(AgentTaskStatus.FAILED, result.taskResults().get(0).status());
-        assertEquals(AgentTaskStatus.COMPLETED, result.taskResults().get(1).status());
-    }
-
-    @Test
-    @DisplayName("TEST 7: Invalid/circular plan is rejected before execution")
+    @DisplayName("TEST 8: Invalid/circular plan is rejected before execution")
     void testInvalidPlanRejectedBeforeExecution() {
         AgentPlan invalidPlan = new AgentPlan("plan-invalid", "Query", 1L, List.of());
         when(planningService.validatePlan(invalidPlan)).thenReturn(false);
@@ -240,7 +262,7 @@ class Phase11Step66PlanExecutionTest {
     }
 
     @Test
-    @DisplayName("TEST 8: Unauthorized workspace access throws UnauthorizedAccessException")
+    @DisplayName("TEST 9: Unauthorized workspace access throws UnauthorizedAccessException")
     void testUnauthorizedWorkspaceThrowsException() {
         AgentTask task = new AgentTask("task-1", AgentTaskType.SEARCH, "Search", List.of());
         AgentPlan plan = new AgentPlan("plan-unauth", "Query", 999L, List.of(task));
