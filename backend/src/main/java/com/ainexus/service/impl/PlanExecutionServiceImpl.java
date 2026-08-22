@@ -8,12 +8,16 @@ import com.ainexus.repository.WorkspaceRepository;
 import com.ainexus.service.AgentPlanningService;
 import com.ainexus.service.PlanExecutionService;
 import com.ainexus.service.RAGGenerationService;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
 @Service
 public class PlanExecutionServiceImpl implements PlanExecutionService {
@@ -26,6 +30,14 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
     private final AnalysisAgent analysisAgent;
     private final KnowledgeAgent knowledgeAgent;
     private final RAGGenerationService ragGenerationService;
+
+    @Value("${app.agent.execution.max-concurrency:4}")
+    private int maxConcurrency = 4;
+
+    @Value("${app.agent.execution.task-timeout-seconds:30}")
+    private int taskTimeoutSeconds = 30;
+
+    private final ExecutorService executorService;
 
     @Autowired
     public PlanExecutionServiceImpl(
@@ -41,6 +53,29 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
         this.analysisAgent = analysisAgent;
         this.knowledgeAgent = knowledgeAgent;
         this.ragGenerationService = ragGenerationService;
+        this.executorService = Executors.newFixedThreadPool(Math.max(2, Runtime.getRuntime().availableProcessors()));
+    }
+
+    public void setMaxConcurrency(int maxConcurrency) {
+        this.maxConcurrency = maxConcurrency;
+    }
+
+    public void setTaskTimeoutSeconds(int taskTimeoutSeconds) {
+        this.taskTimeoutSeconds = taskTimeoutSeconds;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        logger.info("Shutting down PlanExecutionServiceImpl executor pool");
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Override
@@ -76,60 +111,143 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
         }
 
         String executionId = "exec-" + UUID.randomUUID().toString().substring(0, 8);
-        logger.info("Starting execution {} for plan {}", executionId, plan.planId());
+        logger.info("Starting parallel execution {} for plan {}", executionId, plan.planId());
 
-        Map<String, String> outputsByTaskId = new LinkedHashMap<>();
-        Map<String, AgentTaskStatus> taskStatusMap = new HashMap<>();
-        List<AgentTaskResult> taskResults = new ArrayList<>();
+        ConcurrentMap<String, String> outputsByTaskId = new ConcurrentHashMap<>();
+        ConcurrentMap<String, AgentTaskStatus> taskStatusMap = new ConcurrentHashMap<>();
+        ConcurrentMap<String, AgentTaskResult> taskResultsMap = new ConcurrentHashMap<>();
+
+        Set<String> remainingTaskIds = plan.tasks().stream().map(AgentTask::id).collect(Collectors.toSet());
+        Map<String, AgentTask> taskLookup = plan.tasks().stream().collect(Collectors.toMap(AgentTask::id, t -> t));
+
+        Semaphore concurrencyLimiter = new Semaphore(Math.max(1, maxConcurrency));
+
+        while (!remainingTaskIds.isEmpty()) {
+            List<AgentTask> readyTasks = new ArrayList<>();
+            List<AgentTask> skippedTasks = new ArrayList<>();
+
+            for (String taskId : remainingTaskIds) {
+                AgentTask task = taskLookup.get(taskId);
+                boolean allDepsSatisfied = true;
+                boolean anyDepFailed = false;
+
+                for (String depId : task.dependsOn()) {
+                    AgentTaskStatus depStatus = taskStatusMap.getOrDefault(depId, AgentTaskStatus.PENDING);
+                    if (depStatus == AgentTaskStatus.FAILED || depStatus == AgentTaskStatus.SKIPPED) {
+                        anyDepFailed = true;
+                        break;
+                    }
+                    if (depStatus != AgentTaskStatus.COMPLETED) {
+                        allDepsSatisfied = false;
+                    }
+                }
+
+                if (anyDepFailed) {
+                    skippedTasks.add(task);
+                } else if (allDepsSatisfied) {
+                    readyTasks.add(task);
+                }
+            }
+
+            // Mark skipped tasks immediately
+            for (AgentTask skipped : skippedTasks) {
+                logger.warn("Task {} skipped due to upstream dependency failure.", skipped.id());
+                taskStatusMap.put(skipped.id(), AgentTaskStatus.SKIPPED);
+                taskResultsMap.put(skipped.id(), AgentTaskResult.skipped(skipped.id(), skipped.type(), "Dependency not completed successfully."));
+                remainingTaskIds.remove(skipped.id());
+            }
+
+            if (readyTasks.isEmpty() && !skippedTasks.isEmpty()) {
+                continue;
+            }
+
+            if (readyTasks.isEmpty() && !remainingTaskIds.isEmpty()) {
+                logger.error("Deadlock or unresolved dependencies detected for tasks: {}", remainingTaskIds);
+                for (String unresolvableId : remainingTaskIds) {
+                    AgentTask t = taskLookup.get(unresolvableId);
+                    taskStatusMap.put(t.id(), AgentTaskStatus.SKIPPED);
+                    taskResultsMap.put(t.id(), AgentTaskResult.skipped(t.id(), t.type(), "Unresolvable dependency graph"));
+                }
+                remainingTaskIds.clear();
+                break;
+            }
+
+            // Execute ready tasks in parallel
+            List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+            for (AgentTask task : readyTasks) {
+                StringBuilder dependencyContext = new StringBuilder();
+                for (String depId : task.dependsOn()) {
+                    String depOut = outputsByTaskId.get(depId);
+                    if (depOut != null && !depOut.isBlank()) {
+                        dependencyContext.append("\n[Context from ").append(depId).append("]:\n").append(depOut).append("\n");
+                    }
+                }
+
+                CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                    try {
+                        concurrencyLimiter.acquire();
+                        taskStatusMap.put(task.id(), AgentTaskStatus.RUNNING);
+                        logger.info("Executing task {} ({}) in thread {}", task.id(), task.type(), Thread.currentThread().getName());
+                        String output = executeSingleTask(task, plan, dependencyContext.toString(), memory, authenticatedUser);
+                        outputsByTaskId.put(task.id(), output);
+                        taskStatusMap.put(task.id(), AgentTaskStatus.COMPLETED);
+                        taskResultsMap.put(task.id(), AgentTaskResult.success(task.id(), task.type(), output));
+                    } catch (Exception e) {
+                        logger.error("Task {} failed during execution: {}", task.id(), e.getMessage());
+                        taskStatusMap.put(task.id(), AgentTaskStatus.FAILED);
+                        taskResultsMap.put(task.id(), AgentTaskResult.failure(task.id(), task.type(), e.getMessage()));
+                    } finally {
+                        concurrencyLimiter.release();
+                    }
+                }, executorService);
+
+                futures.add(future);
+                remainingTaskIds.remove(task.id());
+            }
+
+            try {
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                        .get(taskTimeoutSeconds, TimeUnit.SECONDS);
+            } catch (TimeoutException te) {
+                logger.error("Parallel execution timed out after {} seconds", taskTimeoutSeconds);
+                for (AgentTask task : readyTasks) {
+                    if (taskStatusMap.get(task.id()) == AgentTaskStatus.RUNNING) {
+                        taskStatusMap.put(task.id(), AgentTaskStatus.FAILED);
+                        taskResultsMap.put(task.id(), AgentTaskResult.failure(task.id(), task.type(), "Task timed out"));
+                    }
+                }
+            } catch (Exception e) {
+                logger.error("Error awaiting parallel task futures: {}", e.getMessage());
+            }
+        }
+
+        // Assemble ordered results according to original plan order
+        List<AgentTaskResult> orderedResults = new ArrayList<>();
+        Map<String, String> orderedOutputs = new LinkedHashMap<>();
 
         boolean anyFailed = false;
         boolean allSuccess = true;
 
         for (AgentTask task : plan.tasks()) {
-            // Check if dependencies succeeded
-            boolean dependenciesSatisfied = true;
-            StringBuilder dependencyContext = new StringBuilder();
-
-            for (String depId : task.dependsOn()) {
-                AgentTaskStatus depStatus = taskStatusMap.getOrDefault(depId, AgentTaskStatus.PENDING);
-                if (depStatus != AgentTaskStatus.COMPLETED) {
-                    dependenciesSatisfied = false;
-                    break;
+            AgentTaskResult r = taskResultsMap.get(task.id());
+            if (r != null) {
+                orderedResults.add(r);
+                if (r.status() == AgentTaskStatus.COMPLETED && r.output() != null) {
+                    orderedOutputs.put(task.id(), r.output());
+                } else if (r.status() == AgentTaskStatus.FAILED || r.status() == AgentTaskStatus.SKIPPED) {
+                    allSuccess = false;
+                    if (r.status() == AgentTaskStatus.FAILED) {
+                        anyFailed = true;
+                    }
                 }
-                String depOutput = outputsByTaskId.get(depId);
-                if (depOutput != null && !depOutput.isBlank()) {
-                    dependencyContext.append("\n[Context from ").append(depId).append("]:\n").append(depOutput).append("\n");
-                }
-            }
-
-            if (!dependenciesSatisfied) {
-                logger.warn("Task {} skipped due to missing/failed dependencies.", task.id());
-                taskStatusMap.put(task.id(), AgentTaskStatus.SKIPPED);
-                taskResults.add(AgentTaskResult.skipped(task.id(), task.type(), "Dependency not completed successfully."));
-                allSuccess = false;
-                continue;
-            }
-
-            // Execute Task
-            try {
-                logger.info("Executing task {} ({})", task.id(), task.type());
-                String taskOutput = executeSingleTask(task, plan, dependencyContext.toString(), memory, authenticatedUser);
-                outputsByTaskId.put(task.id(), taskOutput);
-                taskStatusMap.put(task.id(), AgentTaskStatus.COMPLETED);
-                taskResults.add(AgentTaskResult.success(task.id(), task.type(), taskOutput));
-            } catch (Exception e) {
-                logger.error("Task {} failed during execution: {}", task.id(), e.getMessage());
-                taskStatusMap.put(task.id(), AgentTaskStatus.FAILED);
-                taskResults.add(AgentTaskResult.failure(task.id(), task.type(), e.getMessage()));
-                anyFailed = true;
-                allSuccess = false;
             }
         }
 
         PlanExecutionStatus executionStatus;
-        if (allSuccess) {
+        if (allSuccess && !orderedResults.isEmpty()) {
             executionStatus = PlanExecutionStatus.COMPLETED;
-        } else if (anyFailed && !outputsByTaskId.isEmpty()) {
+        } else if (anyFailed && !orderedOutputs.isEmpty()) {
             executionStatus = PlanExecutionStatus.PARTIALLY_COMPLETED;
         } else if (anyFailed) {
             executionStatus = PlanExecutionStatus.FAILED;
@@ -137,15 +255,15 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
             executionStatus = PlanExecutionStatus.PARTIALLY_COMPLETED;
         }
 
-        String finalOutput = deriveFinalOutput(plan, outputsByTaskId, taskResults);
+        String finalOutput = deriveFinalOutput(plan, orderedOutputs, orderedResults);
 
         return new AgentExecutionResult(
                 executionId,
                 plan.planId(),
                 executionStatus,
                 finalOutput,
-                taskResults,
-                outputsByTaskId
+                orderedResults,
+                orderedOutputs
         );
     }
 
