@@ -6,6 +6,7 @@ import com.ainexus.entity.User;
 import com.ainexus.exception.UnauthorizedAccessException;
 import com.ainexus.repository.WorkspaceRepository;
 import com.ainexus.service.AgentPlanningService;
+import com.ainexus.service.AgentReplanningService;
 import com.ainexus.service.AgentRetryPolicy;
 import com.ainexus.service.PlanExecutionService;
 import com.ainexus.service.RAGGenerationService;
@@ -31,6 +32,7 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
     private final AnalysisAgent analysisAgent;
     private final KnowledgeAgent knowledgeAgent;
     private final RAGGenerationService ragGenerationService;
+    private final AgentReplanningService replanningService;
 
     @Value("${app.agent.execution.max-concurrency:4}")
     private int maxConcurrency = 4;
@@ -47,8 +49,21 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
     @Value("${app.agent.retry.max-delay-ms:1000}")
     private long maxRetryDelayMs = 1000L;
 
+    @Value("${app.agent.replanning.max-attempts:2}")
+    private int maxReplanningAttempts = 2;
+
     private final ExecutorService executorService;
     private AgentRetryPolicy retryPolicy;
+
+    public PlanExecutionServiceImpl(
+            AgentPlanningService planningService,
+            WorkspaceRepository workspaceRepository,
+            SearchAgent searchAgent,
+            AnalysisAgent analysisAgent,
+            KnowledgeAgent knowledgeAgent,
+            RAGGenerationService ragGenerationService) {
+        this(planningService, workspaceRepository, searchAgent, analysisAgent, knowledgeAgent, ragGenerationService, null);
+    }
 
     @Autowired
     public PlanExecutionServiceImpl(
@@ -57,13 +72,15 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
             @Autowired(required = false) SearchAgent searchAgent,
             @Autowired(required = false) AnalysisAgent analysisAgent,
             @Autowired(required = false) KnowledgeAgent knowledgeAgent,
-            @Autowired(required = false) RAGGenerationService ragGenerationService) {
+            @Autowired(required = false) RAGGenerationService ragGenerationService,
+            @Autowired(required = false) AgentReplanningService replanningService) {
         this.planningService = planningService;
         this.workspaceRepository = workspaceRepository;
         this.searchAgent = searchAgent;
         this.analysisAgent = analysisAgent;
         this.knowledgeAgent = knowledgeAgent;
         this.ragGenerationService = ragGenerationService;
+        this.replanningService = replanningService;
         this.executorService = Executors.newFixedThreadPool(Math.max(2, Runtime.getRuntime().availableProcessors()));
         this.retryPolicy = new AgentRetryPolicy(3, 50L, 1000L);
     }
@@ -85,6 +102,10 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
         this.initialRetryDelayMs = initialDelayMs;
         this.maxRetryDelayMs = maxDelayMs;
         this.retryPolicy = new AgentRetryPolicy(maxAttempts, initialDelayMs, maxDelayMs);
+    }
+
+    public void setMaxReplanningAttempts(int maxReplanningAttempts) {
+        this.maxReplanningAttempts = maxReplanningAttempts;
     }
 
     @PreDestroy
@@ -115,6 +136,54 @@ public class PlanExecutionServiceImpl implements PlanExecutionService {
             throw new UnauthorizedAccessException("Authenticated user is required to execute an agent plan.");
         }
 
+        AgentPlan currentPlan = plan;
+        AgentExecutionResult lastResult = null;
+        Set<String> executedPlanFingerprints = new HashSet<>();
+        int replanCount = 0;
+
+        while (currentPlan != null) {
+            String fingerprint = computePlanFingerprint(currentPlan);
+            if (executedPlanFingerprints.contains(fingerprint)) {
+                logger.warn("Plan oscillation or duplicate plan detected (fingerprint: {}). Stopping replanning loop.", fingerprint);
+                break;
+            }
+            executedPlanFingerprints.add(fingerprint);
+
+            lastResult = executeSinglePlanIteration(currentPlan, memory, authenticatedUser);
+
+            if (replanningService == null || !replanningService.shouldReplan(currentPlan, lastResult)) {
+                return lastResult;
+            }
+
+            if (replanCount >= maxReplanningAttempts) {
+                logger.info("Reached maximum replanning attempts ({}/{}). Returning best available result.", replanCount, maxReplanningAttempts);
+                break;
+            }
+
+            replanCount++;
+            logger.info("Triggering self-correction replan iteration {}/{} for plan {}", replanCount, maxReplanningAttempts, currentPlan.planId());
+            AgentPlan correctedPlan = replanningService.generateCorrectedPlan(currentPlan, lastResult, replanCount, memory, authenticatedUser);
+            
+            if (correctedPlan == null) {
+                logger.warn("Replanning service produced null or invalid corrected plan. Stopping replanning loop.");
+                break;
+            }
+            currentPlan = correctedPlan;
+        }
+
+        return lastResult;
+    }
+
+    private String computePlanFingerprint(AgentPlan plan) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(plan.workspaceId()).append("|");
+        for (AgentTask t : plan.tasks()) {
+            sb.append(t.id()).append(":").append(t.type()).append(":").append(t.description().trim()).append(";");
+        }
+        return sb.toString();
+    }
+
+    private AgentExecutionResult executeSinglePlanIteration(AgentPlan plan, ConversationMemory memory, User authenticatedUser) {
         // 1. Validate plan structure
         if (!planningService.validatePlan(plan)) {
             logger.error("Plan {} failed validation before execution.", plan.planId());
