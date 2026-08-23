@@ -1,6 +1,5 @@
 package com.ainexus.service.impl;
 
-import com.ainexus.agent.model.*;
 import com.ainexus.dto.*;
 import com.ainexus.entity.*;
 import com.ainexus.exception.ResourceNotFoundException;
@@ -90,57 +89,56 @@ public class WorkflowExecutionServiceImpl implements WorkflowExecutionService {
         for (WorkflowStep step : enabledSteps) {
             AgentTaskType taskType = mapStepTypeToAgentTaskType(step.getType());
             List<String> deps = step.getDependencies() != null ? step.getDependencies() : List.of();
-            Map<String, Object> taskParams = new HashMap<>();
-            taskParams.put("stepKey", step.getStepKey());
-            taskParams.put("workflowId", workflow.getId());
-            taskParams.put("configuration", step.getConfiguration());
-            if (request != null && request.inputVariables() != null) {
-                taskParams.putAll(request.inputVariables());
-            }
 
             AgentTask task = new AgentTask(
                     step.getStepKey(),
                     taskType,
                     step.getName(),
-                    effectiveQuery,
                     deps,
-                    taskParams,
-                    step.getExecutionOrder()
+                    AgentTaskStatus.PENDING
             );
             agentTasks.add(task);
         }
 
         AgentPlan agentPlan = new AgentPlan(
                 "wf-plan-" + savedExecution.getId(),
-                workflow.getWorkspace().getId(),
                 effectiveQuery,
+                workflow.getWorkspace().getId(),
                 agentTasks
         );
 
         LocalDateTime execStartTime = LocalDateTime.now();
-        PlanExecutionResult planResult = null;
         try {
             logger.info("Executing workflow id: {} (execution id: {}) with {} steps for user: {}",
                     workflow.getId(), savedExecution.getId(), enabledSteps.size(), user.getUsername());
 
-            planResult = planExecutionService.executePlan(agentPlan, user);
+            AgentExecutionResult planResult = planExecutionService.executePlan(agentPlan, user);
 
             LocalDateTime execEndTime = LocalDateTime.now();
             savedExecution.setEndTime(execEndTime);
             savedExecution.setDurationMs(Duration.between(execStartTime, execEndTime).toMillis());
 
-            // Collect step results
             if (planResult != null) {
-                Map<String, TaskExecutionResult> taskResults = planResult.taskResults();
+                Map<String, String> outputsMap = planResult.outputsByTaskId() != null ? planResult.outputsByTaskId() : Map.of();
+                Map<String, AgentTaskResult> taskResultsMap = new HashMap<>();
+                if (planResult.taskResults() != null) {
+                    for (AgentTaskResult tr : planResult.taskResults()) {
+                        taskResultsMap.put(tr.taskId(), tr);
+                    }
+                }
+
                 for (Map.Entry<String, WorkflowStepExecution> entry : stepExecutionMap.entrySet()) {
                     String stepKey = entry.getKey();
                     WorkflowStepExecution stepExec = entry.getValue();
-                    TaskExecutionResult taskRes = taskResults != null ? taskResults.get(stepKey) : null;
+                    AgentTaskResult taskRes = taskResultsMap.get(stepKey);
 
                     if (taskRes != null) {
                         stepExec.setStatus(mapTaskStatusToWorkflowStatus(taskRes.status()));
                         stepExec.setOutput(taskRes.output());
                         stepExec.setErrorMessage(taskRes.errorMessage());
+                    } else if (outputsMap.containsKey(stepKey)) {
+                        stepExec.setStatus(WorkflowExecutionStatus.COMPLETED);
+                        stepExec.setOutput(outputsMap.get(stepKey));
                     } else {
                         stepExec.setStatus(WorkflowExecutionStatus.FAILED);
                         stepExec.setErrorMessage("Task result was missing after plan execution.");
@@ -148,12 +146,12 @@ public class WorkflowExecutionServiceImpl implements WorkflowExecutionService {
                     stepExec.setEndTime(execEndTime);
                 }
 
-                if (planResult.status() == ExecutionStatus.COMPLETED) {
+                if (planResult.status() == PlanExecutionStatus.COMPLETED) {
                     savedExecution.setStatus(WorkflowExecutionStatus.COMPLETED);
-                    savedExecution.setFinalOutput(planResult.finalSynthesis() != null ? planResult.finalSynthesis() : "Workflow executed successfully.");
+                    savedExecution.setFinalOutput(planResult.finalOutput() != null ? planResult.finalOutput() : "Workflow executed successfully.");
                 } else {
                     savedExecution.setStatus(WorkflowExecutionStatus.FAILED);
-                    savedExecution.setErrorMessage(planResult.errorMessage() != null ? planResult.errorMessage() : "One or more workflow steps failed.");
+                    savedExecution.setErrorMessage("One or more workflow steps failed.");
                 }
             } else {
                 savedExecution.setStatus(WorkflowExecutionStatus.FAILED);
@@ -242,10 +240,10 @@ public class WorkflowExecutionServiceImpl implements WorkflowExecutionService {
         };
     }
 
-    private WorkflowExecutionStatus mapTaskStatusToWorkflowStatus(TaskExecutionStatus status) {
+    private WorkflowExecutionStatus mapTaskStatusToWorkflowStatus(AgentTaskStatus status) {
         if (status == null) return WorkflowExecutionStatus.FAILED;
         return switch (status) {
-            case SUCCESS -> WorkflowExecutionStatus.COMPLETED;
+            case COMPLETED -> WorkflowExecutionStatus.COMPLETED;
             case FAILED -> WorkflowExecutionStatus.FAILED;
             case SKIPPED -> WorkflowExecutionStatus.CANCELLED;
             case IN_PROGRESS -> WorkflowExecutionStatus.RUNNING;

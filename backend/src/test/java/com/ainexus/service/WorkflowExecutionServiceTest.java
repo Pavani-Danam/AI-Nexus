@@ -1,6 +1,5 @@
 package com.ainexus.service;
 
-import com.ainexus.agent.model.*;
 import com.ainexus.dto.*;
 import com.ainexus.entity.*;
 import com.ainexus.exception.ResourceNotFoundException;
@@ -88,20 +87,25 @@ class WorkflowExecutionServiceTest {
             return we;
         });
 
-        Map<String, TaskExecutionResult> taskResults = Map.of(
-                "s1", new TaskExecutionResult("s1", TaskExecutionStatus.SUCCESS, "Found 5 docs", null, 1, 100L, null),
-                "s2", new TaskExecutionResult("s2", TaskExecutionStatus.SUCCESS, "Analysis complete", null, 1, 150L, null),
-                "s3", new TaskExecutionResult("s3", TaskExecutionStatus.SUCCESS, "Final Report generated", null, 1, 120L, null)
+        List<AgentTaskResult> taskResults = List.of(
+                AgentTaskResult.success("s1", AgentTaskType.SEARCH, "Found 5 docs", 1),
+                AgentTaskResult.success("s2", AgentTaskType.ANALYZE, "Analysis complete", 1),
+                AgentTaskResult.success("s3", AgentTaskType.SYNTHESIZE, "Final Report generated", 1)
         );
 
-        PlanExecutionResult planResult = new PlanExecutionResult(
+        Map<String, String> outputs = Map.of(
+                "s1", "Found 5 docs",
+                "s2", "Analysis complete",
+                "s3", "Final Report generated"
+        );
+
+        AgentExecutionResult planResult = new AgentExecutionResult(
                 "exec-500",
                 "plan-500",
-                ExecutionStatus.COMPLETED,
-                taskResults,
+                PlanExecutionStatus.COMPLETED,
                 "Comprehensive Q3 synthesis completed successfully.",
-                null,
-                370L
+                taskResults,
+                outputs
         );
 
         when(planExecutionService.executePlan(any(AgentPlan.class), eq(owner))).thenReturn(planResult);
@@ -129,19 +133,20 @@ class WorkflowExecutionServiceTest {
         when(workspaceRepository.findById(100L)).thenReturn(Optional.of(testWorkspace));
         when(workflowExecutionRepository.save(any(WorkflowExecution.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        Map<String, TaskExecutionResult> taskResults = Map.of(
-                "sa", new TaskExecutionResult("sa", TaskExecutionStatus.SUCCESS, "Result A", null, 1, 50L, null),
-                "sb", new TaskExecutionResult("sb", TaskExecutionStatus.SUCCESS, "Result B", null, 1, 60L, null)
+        List<AgentTaskResult> taskResults = List.of(
+                AgentTaskResult.success("sa", AgentTaskType.SEARCH, "Result A", 1),
+                AgentTaskResult.success("sb", AgentTaskType.SEARCH, "Result B", 1)
         );
 
-        PlanExecutionResult planResult = new PlanExecutionResult(
+        Map<String, String> outputs = Map.of("sa", "Result A", "sb", "Result B");
+
+        AgentExecutionResult planResult = new AgentExecutionResult(
                 "exec-parallel",
                 "plan-parallel",
-                ExecutionStatus.COMPLETED,
-                taskResults,
+                PlanExecutionStatus.COMPLETED,
                 "Both branches completed.",
-                null,
-                110L
+                taskResults,
+                outputs
         );
 
         when(planExecutionService.executePlan(any(AgentPlan.class), eq(owner))).thenReturn(planResult);
@@ -160,20 +165,21 @@ class WorkflowExecutionServiceTest {
         when(workspaceRepository.findById(100L)).thenReturn(Optional.of(testWorkspace));
         when(workflowExecutionRepository.save(any(WorkflowExecution.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        Map<String, TaskExecutionResult> taskResults = Map.of(
-                "s1", new TaskExecutionResult("s1", TaskExecutionStatus.SUCCESS, "Found docs", null, 1, 80L, null),
-                "s2", new TaskExecutionResult("s2", TaskExecutionStatus.FAILED, null, "Model timed out", 3, 300L, TaskFailureCategory.TRANSIENT_FAILURE),
-                "s3", new TaskExecutionResult("s3", TaskExecutionStatus.SKIPPED, null, "Skipped due to upstream failure", 0, 0L, null)
+        List<AgentTaskResult> taskResults = List.of(
+                AgentTaskResult.success("s1", AgentTaskType.SEARCH, "Found docs", 1),
+                AgentTaskResult.failure("s2", AgentTaskType.ANALYZE, "Model timed out", FailureCategory.TRANSIENT_FAILURE, 3),
+                AgentTaskResult.skipped("s3", AgentTaskType.SYNTHESIZE, "Skipped due to upstream failure")
         );
 
-        PlanExecutionResult planResult = new PlanExecutionResult(
+        Map<String, String> outputs = Map.of("s1", "Found docs");
+
+        AgentExecutionResult planResult = new AgentExecutionResult(
                 "exec-fail",
                 "plan-fail",
-                ExecutionStatus.FAILED,
-                taskResults,
+                PlanExecutionStatus.FAILED,
                 null,
-                "Step s2 failed",
-                380L
+                taskResults,
+                outputs
         );
 
         when(planExecutionService.executePlan(any(AgentPlan.class), eq(owner))).thenReturn(planResult);
@@ -182,7 +188,6 @@ class WorkflowExecutionServiceTest {
 
         assertNotNull(response);
         assertEquals(WorkflowExecutionStatus.FAILED, response.status());
-        assertEquals("Step s2 failed", response.errorMessage());
     }
 
     @Test
