@@ -234,6 +234,7 @@ public class WorkflowExecutionServiceImpl implements WorkflowExecutionService {
             case ANALYZE -> AgentTaskType.ANALYZE;
             case KNOWLEDGE -> AgentTaskType.KNOWLEDGE;
             case SYNTHESIZE, NOTIFICATION -> AgentTaskType.SYNTHESIZE;
+            default -> AgentTaskType.SEARCH;
         };
     }
 
@@ -244,6 +245,7 @@ public class WorkflowExecutionServiceImpl implements WorkflowExecutionService {
             case FAILED -> WorkflowExecutionStatus.FAILED;
             case SKIPPED -> WorkflowExecutionStatus.CANCELLED;
             case PENDING -> WorkflowExecutionStatus.PENDING;
+            default -> WorkflowExecutionStatus.FAILED;
         };
     }
 }
