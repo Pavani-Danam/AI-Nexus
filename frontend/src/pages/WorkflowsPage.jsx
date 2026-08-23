@@ -11,10 +11,15 @@ export default function WorkflowsPage() {
 
   const [workflows, setWorkflows] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [executingId, setExecutingId] = useState(null);
   const [error, setError] = useState('');
   const [selectedWorkflow, setSelectedWorkflow] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+
+  // Execution Result State
+  const [executionResult, setExecutionResult] = useState(null);
+  const [isResultOpen, setIsResultOpen] = useState(false);
 
   // Form State
   const [name, setName] = useState('');
@@ -48,7 +53,7 @@ export default function WorkflowsPage() {
     setDescription('');
     setStatus('DRAFT');
     setSteps([
-      { stepKey: 'step-1', name: 'Retrieve Relevant Documents', type: 'SEARCH', configuration: '{}', executionOrder: 1, dependencies: [], enabled: true }
+      { stepKey: 'step-1', name: 'Retrieve Documents', type: 'SEARCH', configuration: '{}', executionOrder: 1, dependencies: [], enabled: true }
     ]);
     setIsModalOpen(true);
   };
@@ -69,6 +74,20 @@ export default function WorkflowsPage() {
       enabled: s.enabled
     })) || []);
     setIsModalOpen(true);
+  };
+
+  const handleRunWorkflow = async (wf) => {
+    try {
+      setExecutingId(wf.id);
+      setError('');
+      const res = await workflowService.executeWorkflow(wf.id, { inputQuery: wf.name });
+      setExecutionResult(res);
+      setIsResultOpen(true);
+    } catch (err) {
+      alert(err.response?.data?.message || 'Workflow execution failed');
+    } finally {
+      setExecutingId(null);
+    }
   };
 
   const addStep = () => {
@@ -141,7 +160,7 @@ export default function WorkflowsPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
         <div>
           <h1 style={{ fontSize: '24px', fontWeight: 'bold', margin: '0 0 6px 0', color: '#1e293b' }}>Workflows</h1>
-          <p style={{ margin: 0, color: '#64748b' }}>Define and configure repeatable enterprise agent workflows.</p>
+          <p style={{ margin: 0, color: '#64748b' }}>Define, trigger, and inspect repeatable agent workflows.</p>
         </div>
         <button
           onClick={openCreateModal}
@@ -188,22 +207,81 @@ export default function WorkflowsPage() {
                   </ul>
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: '8px', borderTop: '1px solid #f1f5f9', paddingTop: '12px' }}>
+              <div>
                 <button
-                  onClick={() => openEditModal(wf)}
-                  style={{ flex: 1, padding: '6px 12px', background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }}
+                  onClick={() => handleRunWorkflow(wf)}
+                  disabled={executingId === wf.id}
+                  style={{ width: '100%', marginBottom: '8px', padding: '8px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: '4px', cursor: executingId === wf.id ? 'not-allowed' : 'pointer', fontWeight: 'bold', fontSize: '13px' }}
                 >
-                  Edit
+                  {executingId === wf.id ? '? Executing...' : '? Run Workflow'}
                 </button>
-                <button
-                  onClick={() => handleDelete(wf.id)}
-                  style={{ padding: '6px 12px', background: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }}
-                >
-                  Delete
-                </button>
+                <div style={{ display: 'flex', gap: '8px', borderTop: '1px solid #f1f5f9', paddingTop: '10px' }}>
+                  <button
+                    onClick={() => openEditModal(wf)}
+                    style={{ flex: 1, padding: '6px 12px', background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => handleDelete(wf.id)}
+                    style={{ padding: '6px 12px', background: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Execution Result Modal */}
+      {isResultOpen && executionResult && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100 }}>
+          <div style={{ background: '#fff', borderRadius: '8px', width: '750px', maxHeight: '90vh', overflowY: 'auto', padding: '24px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ margin: 0, fontSize: '20px' }}>Workflow Execution Run #{executionResult.id}</h2>
+              <span style={{ fontSize: '12px', padding: '3px 10px', borderRadius: '4px', fontWeight: 'bold', background: executionResult.status === 'COMPLETED' ? '#dcfce7' : '#fee2e2', color: executionResult.status === 'COMPLETED' ? '#15803d' : '#dc2626' }}>
+                {executionResult.status} ({executionResult.durationMs || 0}ms)
+              </span>
+            </div>
+
+            {executionResult.errorMessage && (
+              <div style={{ padding: '10px', background: '#fee2e2', color: '#b91c1c', borderRadius: '4px', marginBottom: '14px', fontSize: '13px' }}>
+                {executionResult.errorMessage}
+              </div>
+            )}
+
+            <div style={{ marginBottom: '16px' }}>
+              <h3 style={{ fontSize: '15px', marginBottom: '8px' }}>Final Output</h3>
+              <div style={{ padding: '12px', background: '#f8fafc', borderRadius: '6px', border: '1px solid #e2e8f0', fontSize: '13px', whiteSpace: 'pre-wrap' }}>
+                {executionResult.finalOutput || 'No output recorded.'}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <h3 style={{ fontSize: '15px', marginBottom: '8px' }}>Step Audit Trace</h3>
+              {executionResult.stepExecutions?.map((step) => (
+                <div key={step.id || step.stepKey} style={{ background: '#f1f5f9', padding: '10px', borderRadius: '6px', marginBottom: '8px', fontSize: '13px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', marginBottom: '4px' }}>
+                    <span>{step.stepKey}: {step.stepName} ({step.stepType})</span>
+                    <span style={{ color: step.status === 'COMPLETED' ? '#15803d' : '#dc2626' }}>{step.status}</span>
+                  </div>
+                  {step.output && <div style={{ color: '#334155', marginTop: '4px' }}><strong>Output:</strong> {step.output}</div>}
+                  {step.errorMessage && <div style={{ color: '#dc2626', marginTop: '4px' }}><strong>Error:</strong> {step.errorMessage}</div>}
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setIsResultOpen(false)}
+                style={{ padding: '8px 16px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
