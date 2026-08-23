@@ -11,7 +11,18 @@ import java.util.Optional;
 
 @Repository
 public interface WorkspaceMemberRepository extends JpaRepository<WorkspaceMember, Long> {
+
     List<WorkspaceMember> findByWorkspace(Workspace workspace);
-    List<WorkspaceMember> findByUser(User user);
+
+    List<WorkspaceMember> findByWorkspaceId(Long workspaceId);
+
+    List<WorkspaceMember> findByUserId(Long userId);
+
+    Optional<WorkspaceMember> findByWorkspaceIdAndUserId(Long workspaceId, Long userId);
+
     Optional<WorkspaceMember> findByWorkspaceAndUser(Workspace workspace, User user);
+
+    boolean existsByWorkspaceIdAndUserId(Long workspaceId, Long userId);
+
+    void deleteByWorkspaceIdAndUserId(Long workspaceId, Long userId);
 }
