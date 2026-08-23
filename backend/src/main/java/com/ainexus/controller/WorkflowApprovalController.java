@@ -4,7 +4,8 @@ import com.ainexus.dto.WorkflowApprovalDecisionRequest;
 import com.ainexus.dto.WorkflowApprovalResponse;
 import com.ainexus.dto.WorkflowExecutionResponse;
 import com.ainexus.entity.User;
-import com.ainexus.service.UserService;
+import com.ainexus.exception.ResourceNotFoundException;
+import com.ainexus.repository.UserRepository;
 import com.ainexus.service.WorkflowApprovalService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,20 +23,28 @@ public class WorkflowApprovalController {
     private static final Logger logger = LoggerFactory.getLogger(WorkflowApprovalController.class);
 
     private final WorkflowApprovalService workflowApprovalService;
-    private final UserService userService;
+    private final UserRepository userRepository;
 
     public WorkflowApprovalController(
             WorkflowApprovalService workflowApprovalService,
-            UserService userService) {
+            UserRepository userRepository) {
         this.workflowApprovalService = workflowApprovalService;
-        this.userService = userService;
+        this.userRepository = userRepository;
+    }
+
+    private User getAuthenticatedUser(Authentication authentication) {
+        if (authentication == null || authentication.getName() == null) {
+            throw new ResourceNotFoundException("Authentication principal is missing.");
+        }
+        return userRepository.findByUsername(authentication.getName())
+                .orElseThrow(() -> new ResourceNotFoundException("User not found for username: " + authentication.getName()));
     }
 
     @GetMapping("/approvals/{approvalId}")
     public ResponseEntity<WorkflowApprovalResponse> getApprovalById(
             @PathVariable Long approvalId,
             Authentication authentication) {
-        User user = userService.getUserFromAuthentication(authentication);
+        User user = getAuthenticatedUser(authentication);
         WorkflowApprovalResponse response = workflowApprovalService.getApprovalById(approvalId, user);
         return ResponseEntity.ok(response);
     }
@@ -44,7 +53,7 @@ public class WorkflowApprovalController {
     public ResponseEntity<List<WorkflowApprovalResponse>> getPendingApprovals(
             @PathVariable Long workspaceId,
             Authentication authentication) {
-        User user = userService.getUserFromAuthentication(authentication);
+        User user = getAuthenticatedUser(authentication);
         List<WorkflowApprovalResponse> responses = workflowApprovalService.getPendingApprovalsByWorkspace(workspaceId, user);
         return ResponseEntity.ok(responses);
     }
@@ -53,7 +62,7 @@ public class WorkflowApprovalController {
     public ResponseEntity<List<WorkflowApprovalResponse>> getApprovalsByExecution(
             @PathVariable Long executionId,
             Authentication authentication) {
-        User user = userService.getUserFromAuthentication(authentication);
+        User user = getAuthenticatedUser(authentication);
         List<WorkflowApprovalResponse> responses = workflowApprovalService.getApprovalsByExecution(executionId, user);
         return ResponseEntity.ok(responses);
     }
@@ -63,7 +72,7 @@ public class WorkflowApprovalController {
             @PathVariable Long approvalId,
             @RequestBody(required = false) WorkflowApprovalDecisionRequest request,
             Authentication authentication) {
-        User user = userService.getUserFromAuthentication(authentication);
+        User user = getAuthenticatedUser(authentication);
         logger.info("REST: User {} approving gate id: {}", user.getUsername(), approvalId);
         WorkflowExecutionResponse response = workflowApprovalService.approveStep(approvalId, request, user);
         return ResponseEntity.ok(response);
@@ -74,7 +83,7 @@ public class WorkflowApprovalController {
             @PathVariable Long approvalId,
             @RequestBody(required = false) WorkflowApprovalDecisionRequest request,
             Authentication authentication) {
-        User user = userService.getUserFromAuthentication(authentication);
+        User user = getAuthenticatedUser(authentication);
         logger.info("REST: User {} rejecting gate id: {}", user.getUsername(), approvalId);
         WorkflowExecutionResponse response = workflowApprovalService.rejectStep(approvalId, request, user);
         return ResponseEntity.ok(response);
