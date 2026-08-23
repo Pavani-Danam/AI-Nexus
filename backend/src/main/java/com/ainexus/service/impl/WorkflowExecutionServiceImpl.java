@@ -235,8 +235,7 @@ public class WorkflowExecutionServiceImpl implements WorkflowExecutionService {
             case SEARCH -> AgentTaskType.SEARCH;
             case ANALYZE -> AgentTaskType.ANALYZE;
             case KNOWLEDGE -> AgentTaskType.KNOWLEDGE;
-            case SYNTHESIZE -> AgentTaskType.SYNTHESIZE;
-            case NOTIFICATION -> AgentTaskType.NOTIFY;
+            case SYNTHESIZE, NOTIFICATION -> AgentTaskType.SYNTHESIZE;
         };
     }
 
