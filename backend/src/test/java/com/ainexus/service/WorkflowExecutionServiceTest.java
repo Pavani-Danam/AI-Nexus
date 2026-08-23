@@ -1,5 +1,6 @@
 package com.ainexus.service;
 
+import com.ainexus.agent.model.*;
 import com.ainexus.dto.*;
 import com.ainexus.entity.*;
 import com.ainexus.exception.ResourceNotFoundException;
