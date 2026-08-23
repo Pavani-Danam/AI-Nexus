@@ -59,7 +59,6 @@ public class WorkflowExecutionServiceImpl implements WorkflowExecutionService {
             throw new IllegalArgumentException("Cannot execute workflow without enabled steps.");
         }
 
-        // Initialize execution state
         WorkflowExecution execution = new WorkflowExecution(workflow, workflow.getWorkspace(), user);
         execution.setStatus(WorkflowExecutionStatus.RUNNING);
         execution.setStartTime(LocalDateTime.now());
@@ -80,7 +79,6 @@ public class WorkflowExecutionServiceImpl implements WorkflowExecutionService {
 
         WorkflowExecution savedExecution = workflowExecutionRepository.save(execution);
 
-        // Map Workflow Steps to AgentTasks for PlanExecutionService
         List<AgentTask> agentTasks = new ArrayList<>();
         String effectiveQuery = (request != null && request.inputQuery() != null && !request.inputQuery().isBlank())
                 ? request.inputQuery().trim()
@@ -245,7 +243,6 @@ public class WorkflowExecutionServiceImpl implements WorkflowExecutionService {
             case COMPLETED -> WorkflowExecutionStatus.COMPLETED;
             case FAILED -> WorkflowExecutionStatus.FAILED;
             case SKIPPED -> WorkflowExecutionStatus.CANCELLED;
-            case IN_PROGRESS -> WorkflowExecutionStatus.RUNNING;
             case PENDING -> WorkflowExecutionStatus.PENDING;
         };
     }
