@@ -1,0 +1,12 @@
+package com.ainexus.entity;
+
+public enum WorkflowAuditEventType {
+    WORKFLOW_CREATED,
+    WORKFLOW_UPDATED,
+    WORKFLOW_EXECUTED,
+    WORKFLOW_FAILED,
+    WORKFLOW_COMPLETED,
+    APPROVAL_REQUESTED,
+    APPROVAL_RESOLVED,
+    SCHEDULE_TRIGGERED
+}
