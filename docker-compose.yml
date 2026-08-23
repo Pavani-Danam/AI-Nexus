@@ -1,0 +1,90 @@
+version: "3.8"
+
+networks:
+  ainexus-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+    driver: local
+  uploads_data:
+    driver: local
+
+services:
+  database:
+    image: postgres:16-alpine
+    container_name: ainexus-database
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-ainexus_prod}
+      POSTGRES_USER: ${DB_USERNAME:-ainexus_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-ainexus_secret_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-ainexus_admin} -d ${DB_NAME:-ainexus_prod}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ainexus-net
+
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: ainexus-ai-service
+    restart: unless-stopped
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      PINECONE_API_KEY: ${PINECONE_API_KEY}
+      PINECONE_INDEX: ${PINECONE_INDEX:-ainexus-index}
+      PINECONE_ENVIRONMENT: ${PINECONE_ENVIRONMENT:-us-east-1}
+    ports:
+      - "8000:8000"
+    networks:
+      - ainexus-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ainexus-backend
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:postgresql://database:5432/${DB_NAME:-ainexus_prod}
+      DB_USERNAME: ${DB_USERNAME:-ainexus_admin}
+      DB_PASSWORD: ${DB_PASSWORD:-ainexus_secret_password}
+      JWT_SECRET: ${JWT_SECRET:-dGhpcy1pcy1hLXNlY3VyZS1wcm9kdWN0aW9uLXNpZ25pbmcta2V5LWZvci1haS1uZXh1cw==}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-86400000}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      PINECONE_API_KEY: ${PINECONE_API_KEY}
+      PINECONE_INDEX: ${PINECONE_INDEX:-ainexus-index}
+      PINECONE_ENVIRONMENT: ${PINECONE_ENVIRONMENT:-us-east-1}
+      UPLOAD_DIR: /var/ainexus/uploads
+    volumes:
+      - uploads_data:/var/ainexus/uploads
+    ports:
+      - "8080:8080"
+    networks:
+      - ainexus-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ainexus-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    networks:
+      - ainexus-net
