@@ -36,16 +36,34 @@ public class AuthService {
     }
 
     public LoginResponse login(LoginRequest request) {
-        User user = userRepository.findByEmail(request.getEmail())
-                .orElseThrow(() -> new BadCredentialsException("Invalid email or password"));
+        String inputEmail = request.getEmail() != null ? request.getEmail().trim() : "";
+        System.out.println("--------------------------------------------------");
+        System.out.println("[AUTH DIAGNOSTIC] Login attempt for email: [" + inputEmail + "]");
 
-        if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+        User user = userRepository.findByEmail(inputEmail)
+                .orElse(null);
+
+        if (user == null) {
+            System.out.println("[AUTH DIAGNOSTIC] FAIL: User not found in database for email: [" + inputEmail + "]");
+            throw new BadCredentialsException("Invalid email or password");
+        }
+
+        System.out.println("[AUTH DIAGNOSTIC] User found with ID: " + user.getId() + ", role: " + user.getRole());
+
+        boolean passwordMatch = passwordEncoder.matches(request.getPassword(), user.getPassword());
+        System.out.println("[AUTH DIAGNOSTIC] PasswordEncoder match result: " + passwordMatch);
+
+        if (!passwordMatch) {
+            System.out.println("[AUTH DIAGNOSTIC] FAIL: Password mismatch.");
             throw new BadCredentialsException("Invalid email or password");
         }
 
         if (!user.isEnabled()) {
+            System.out.println("[AUTH DIAGNOSTIC] FAIL: User is disabled.");
             throw new BadCredentialsException("User account is disabled");
         }
+
+        System.out.println("[AUTH DIAGNOSTIC] SUCCESS: Authenticated successfully. Generating tokens...");
 
         String accessToken = jwtService.generateToken(user.getEmail());
         RefreshToken refreshToken = refreshTokenService.createRefreshToken(user.getEmail());

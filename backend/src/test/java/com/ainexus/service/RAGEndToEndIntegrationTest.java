@@ -67,7 +67,7 @@ class RAGEndToEndIntegrationTest {
         testUser.setId(1L);
         testUser.setUsername("integrationUser");
 
-        ContextManagementServiceImpl contextManagementService = new ContextManagementServiceImpl();
+        ContextManagementService contextManagementService = new ContextManagementServiceImpl();
         ReflectionTestUtils.setField(contextManagementService, "minRelevanceScore", 0.35);
         ReflectionTestUtils.setField(contextManagementService, "maxContextCharacters", 8000);
 

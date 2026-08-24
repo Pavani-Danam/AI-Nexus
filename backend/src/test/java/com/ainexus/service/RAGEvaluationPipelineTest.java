@@ -57,7 +57,7 @@ class RAGEvaluationPipelineTest {
         evaluationUser.setId(100L);
         evaluationUser.setUsername("evaluator");
 
-        ContextManagementServiceImpl contextManagementService = new ContextManagementServiceImpl();
+        ContextManagementService contextManagementService = new ContextManagementServiceImpl();
         ReflectionTestUtils.setField(contextManagementService, "minRelevanceScore", 0.35);
         ReflectionTestUtils.setField(contextManagementService, "maxContextCharacters", 4000);
 

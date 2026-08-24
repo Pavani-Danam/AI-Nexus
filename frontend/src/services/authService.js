@@ -9,19 +9,19 @@ const authService = {
   async login(credentials) {
     const response = await api.post('/auth/login', credentials);
     if (response.data && response.data.accessToken) {
-      localStorage.setItem('accessToken', response.data.accessToken);
+      localStorage.setItem('nexus_access_token', response.data.accessToken);
       if (response.data.refreshToken) {
-        localStorage.setItem('refreshToken', response.data.refreshToken);
+        localStorage.setItem('nexus_refresh_token', response.data.refreshToken);
       }
       if (response.data.user) {
-        localStorage.setItem('user', JSON.stringify(response.data.user));
+        localStorage.setItem('nexus_user', JSON.stringify(response.data.user));
       }
     }
     return response.data;
   },
 
   async logout() {
-    const refreshToken = localStorage.getItem('refreshToken');
+    const refreshToken = localStorage.getItem('nexus_refresh_token');
     try {
       if (refreshToken) {
         await api.post('/auth/logout', { refreshToken });
@@ -29,15 +29,15 @@ const authService = {
     } catch {
       // Proceed with local cleanup even if the server request fails
     } finally {
-      localStorage.removeItem('accessToken');
-      localStorage.removeItem('refreshToken');
-      localStorage.removeItem('user');
+      localStorage.removeItem('nexus_access_token');
+      localStorage.removeItem('nexus_refresh_token');
+      localStorage.removeItem('nexus_user');
     }
   },
 
   getCurrentUser() {
     try {
-      const userStr = localStorage.getItem('user');
+      const userStr = localStorage.getItem('nexus_user');
       return userStr ? JSON.parse(userStr) : null;
     } catch {
       return null;
@@ -45,11 +45,11 @@ const authService = {
   },
 
   getAccessToken() {
-    return localStorage.getItem('accessToken');
+    return localStorage.getItem('nexus_access_token');
   },
 
   getRefreshToken() {
-    return localStorage.getItem('refreshToken');
+    return localStorage.getItem('nexus_refresh_token');
   }
 };
 

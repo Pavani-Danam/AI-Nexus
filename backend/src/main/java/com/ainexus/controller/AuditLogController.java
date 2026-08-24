@@ -17,7 +17,7 @@ public class AuditLogController {
         this.auditLogService = auditLogService;
     }
 
-    @GetMapping
+    @GetMapping("/user")
     public ResponseEntity<List<AuditLog>> getLogsByUser(@RequestParam Long userId) {
         return ResponseEntity.ok(auditLogService.getLogsByUser(userId));
     }
