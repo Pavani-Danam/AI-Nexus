@@ -18,4 +18,5 @@ public interface WorkspaceRepository extends JpaRepository<Workspace, Long> {
 
     @Query("SELECT w FROM Workspace w JOIN FETCH w.owner WHERE w.id = :id")
     Optional<Workspace> findByIdWithDetails(@Param("id") Long id);
+    java.util.List<com.ainexus.entity.Workspace> findByOwnerId(Long ownerId);
 }

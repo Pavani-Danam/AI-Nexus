@@ -30,4 +30,5 @@ public interface DocumentRepository extends JpaRepository<Document, Long> {
 
     @Query("SELECT d FROM Document d WHERE d.workspace = :workspace AND (:search IS NULL OR LOWER(d.fileName) LIKE LOWER(CONCAT('%', :search, '%'))) ORDER BY d.createdAt DESC")
     List<Document> findByWorkspaceAndSearch(@Param("workspace") Workspace workspace, @Param("search") String search);
+    java.util.List<com.ainexus.entity.Document> findByWorkspaceIdOrderByCreatedAtDesc(Long workspaceId);
 }
