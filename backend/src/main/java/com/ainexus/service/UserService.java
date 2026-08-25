@@ -9,7 +9,7 @@ import com.ainexus.exception.DuplicateResourceException;
 import com.ainexus.exception.ResourceNotFoundException;
 import com.ainexus.repository.UserRepository;
 import com.ainexus.repository.WorkspaceRepository;
-import com.ainexus.security.JwtTokenProvider;
+import com.ainexus.security.JwtService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -27,7 +27,7 @@ public class UserService {
     private final PasswordEncoder passwordEncoder;
 
     @Autowired(required = false)
-    private JwtTokenProvider jwtTokenProvider;
+    private JwtService jwtService;
 
     public UserService(UserRepository userRepository,
                        WorkspaceRepository workspaceRepository,
@@ -67,7 +67,7 @@ public class UserService {
                 .build();
         Workspace savedWorkspace = workspaceRepository.save(personalWorkspace);
 
-        String token = (jwtTokenProvider != null) ? jwtTokenProvider.generateToken(savedUser.getUsername()) : "dev-token";
+        String token = (jwtService != null) ? jwtService.generateToken(savedUser.getUsername()) : "";
 
         return AuthResponse.builder()
                 .id(savedUser.getId())
