@@ -10,4 +10,7 @@ public class AuthResponse {
     private Long id;
     private String name;
     private String email;
+    private String token;
+    private String accessToken;
+    private Long defaultWorkspaceId;
 }

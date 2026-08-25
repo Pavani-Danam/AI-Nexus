@@ -4,9 +4,13 @@ import com.ainexus.dto.AuthResponse;
 import com.ainexus.dto.RegisterRequest;
 import com.ainexus.entity.Role;
 import com.ainexus.entity.User;
+import com.ainexus.entity.Workspace;
 import com.ainexus.exception.DuplicateResourceException;
 import com.ainexus.exception.ResourceNotFoundException;
 import com.ainexus.repository.UserRepository;
+import com.ainexus.repository.WorkspaceRepository;
+import com.ainexus.security.JwtTokenProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,10 +23,17 @@ import java.util.Optional;
 public class UserService {
 
     private final UserRepository userRepository;
+    private final WorkspaceRepository workspaceRepository;
     private final PasswordEncoder passwordEncoder;
 
-    public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder) {
+    @Autowired(required = false)
+    private JwtTokenProvider jwtTokenProvider;
+
+    public UserService(UserRepository userRepository,
+                       WorkspaceRepository workspaceRepository,
+                       PasswordEncoder passwordEncoder) {
         this.userRepository = userRepository;
+        this.workspaceRepository = workspaceRepository;
         this.passwordEncoder = passwordEncoder;
     }
 
@@ -31,7 +42,8 @@ public class UserService {
             throw new DuplicateResourceException("Email is already registered: " + request.getEmail());
         }
 
-        String generatedUsername = request.getEmail().split("@")[0] + "_" + System.currentTimeMillis() % 10000;
+        String emailPrefix = request.getEmail().split("@")[0];
+        String generatedUsername = emailPrefix + "_" + (System.currentTimeMillis() % 10000);
         if (userRepository.existsByUsername(generatedUsername)) {
             generatedUsername = "user_" + System.currentTimeMillis();
         }
@@ -47,10 +59,23 @@ public class UserService {
 
         User savedUser = userRepository.save(user);
 
+        // Auto-provision personal workspace
+        Workspace personalWorkspace = Workspace.builder()
+                .name(request.getName().trim() + "'s Workspace")
+                .description("Default personal workspace for " + request.getName())
+                .owner(savedUser)
+                .build();
+        Workspace savedWorkspace = workspaceRepository.save(personalWorkspace);
+
+        String token = (jwtTokenProvider != null) ? jwtTokenProvider.generateToken(savedUser.getUsername()) : "dev-token";
+
         return AuthResponse.builder()
                 .id(savedUser.getId())
                 .name(savedUser.getName())
                 .email(savedUser.getEmail())
+                .token(token)
+                .accessToken(token)
+                .defaultWorkspaceId(savedWorkspace.getId())
                 .build();
     }
 
