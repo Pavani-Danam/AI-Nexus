@@ -7,9 +7,10 @@ const api = axios.create({
   },
 });
 
+// Attach Token & Multi-tenant Workspace Header
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('token') || localStorage.getItem('jwt');
+    const token = localStorage.getItem('nexus_access_token') || localStorage.getItem('token') || localStorage.getItem('jwt');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -22,83 +23,22 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
+// Response Interceptor: Avoid redirecting on auth endpoints
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response && error.response.status === 401) {
+    const isAuthEndpoint = error.config && (error.config.url.includes('/auth/login') || error.config.url.includes('/auth/register'));
+    if (error.response && error.response.status === 401 && !isAuthEndpoint) {
+      localStorage.removeItem('nexus_access_token');
       localStorage.removeItem('token');
       localStorage.removeItem('jwt');
-      if (window.location.pathname !== '/login' && window.location.pathname !== '/auth') {
+      localStorage.removeItem('nexus_user');
+      if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
         window.location.href = '/login';
       }
     }
     return Promise.reject(error);
   }
 );
-
-export const authService = {
-  login: async (username, password) => {
-    const res = await api.post('/auth/login', { username, password });
-    if (res.data.token) {
-      localStorage.setItem('token', res.data.token);
-    }
-    return res.data;
-  },
-  logout: () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('jwt');
-    localStorage.removeItem('activeWorkspaceId');
-    window.location.href = '/login';
-  }
-};
-
-export const dashboardService = {
-  getSummary: async (workspaceId) => {
-    const res = await api.get('/dashboard/summary', { params: { workspaceId } });
-    return res.data;
-  }
-};
-
-export const workspaceService = {
-  getAll: async () => {
-    const res = await api.get('/workspaces');
-    return res.data;
-  },
-  create: async (data) => {
-    const res = await api.post('/workspaces', data);
-    return res.data;
-  }
-};
-
-export const documentService = {
-  getAll: async (workspaceId) => {
-    const res = await api.get('/documents', { params: { workspaceId } });
-    return res.data;
-  },
-  upload: async (formData) => {
-    const res = await api.post('/documents/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    });
-    return res.data;
-  },
-  delete: async (id) => {
-    await api.delete(`/documents/${id}`);
-  },
-  search: async (query, workspaceId) => {
-    const res = await api.get('/documents/search', { params: { query, workspaceId } });
-    return res.data;
-  }
-};
-
-export const chatService = {
-  getConversations: async (workspaceId) => {
-    const res = await api.get('/chat/conversations', { params: { workspaceId } });
-    return res.data;
-  },
-  sendMessage: async (message, conversationId, workspaceId) => {
-    const res = await api.post('/chat/message', { message, conversationId, workspaceId });
-    return res.data;
-  }
-};
 
 export default api;

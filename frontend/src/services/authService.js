@@ -7,17 +7,25 @@ const authService = {
   },
 
   async login(credentials) {
-    const response = await api.post('/auth/login', credentials);
-    if (response.data && response.data.accessToken) {
-      localStorage.setItem('nexus_access_token', response.data.accessToken);
-      if (response.data.refreshToken) {
-        localStorage.setItem('nexus_refresh_token', response.data.refreshToken);
+    const payload = {
+      email: credentials.email || credentials.username,
+      username: credentials.username || credentials.email,
+      password: credentials.password,
+    };
+    const response = await api.post('/auth/login', payload);
+    const data = response.data;
+    const token = data.accessToken || data.token;
+    if (token) {
+      localStorage.setItem('nexus_access_token', token);
+      localStorage.setItem('token', token);
+      if (data.refreshToken) {
+        localStorage.setItem('nexus_refresh_token', data.refreshToken);
       }
-      if (response.data.user) {
-        localStorage.setItem('nexus_user', JSON.stringify(response.data.user));
+      if (data.user) {
+        localStorage.setItem('nexus_user', JSON.stringify(data.user));
       }
     }
-    return response.data;
+    return data;
   },
 
   async logout() {
@@ -27,11 +35,14 @@ const authService = {
         await api.post('/auth/logout', { refreshToken });
       }
     } catch {
-      // Proceed with local cleanup even if the server request fails
+      // Clean up locally regardless
     } finally {
       localStorage.removeItem('nexus_access_token');
       localStorage.removeItem('nexus_refresh_token');
       localStorage.removeItem('nexus_user');
+      localStorage.removeItem('token');
+      localStorage.removeItem('jwt');
+      localStorage.removeItem('activeWorkspaceId');
     }
   },
 
@@ -45,7 +56,7 @@ const authService = {
   },
 
   getAccessToken() {
-    return localStorage.getItem('nexus_access_token');
+    return localStorage.getItem('nexus_access_token') || localStorage.getItem('token');
   },
 
   getRefreshToken() {
