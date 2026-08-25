@@ -13,4 +13,5 @@ public interface ConversationRepository extends JpaRepository<Conversation, Long
     List<Conversation> findByUserOrderByCreatedAtDesc(User user);
     List<Conversation> findByWorkspaceOrderByCreatedAtDesc(Workspace workspace);
     long countByWorkspaceId(Long workspaceId);
+    java.util.List<com.ainexus.entity.Conversation> findByWorkspaceIdOrderByCreatedAtDesc(Long workspaceId);
 }
